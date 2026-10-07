@@ -1,0 +1,64 @@
+{
+  "_comment": "AstrBot 关键配置参考（仅列与本方案相关的字段）。你不需要整体替换自己的 cmd_config.json，只需在 WebUI 里把对应项设置成下面这样；此处用占位，勿填真实密钥。",
+
+  "platform": [
+    {
+      "id": "bot",
+      "type": "aiocqhttp",
+      "enable": true,
+      "ws_reverse_host": "0.0.0.0",
+      "ws_reverse_port": 6199,
+      "ws_reverse_token": ""
+    }
+  ],
+
+  "admins_id": [
+    "YOUR_ADMIN_QQ"
+  ],
+
+  "wake_prefix": [
+    "//"
+  ],
+
+  "provider_sources": [
+    {
+      "provider": "deepseek",
+      "type": "openai_chat_completion",
+      "provider_type": "chat_completion",
+      "key": [
+        "YOUR_DEEPSEEK_API_KEY"
+      ],
+      "api_base": "https://api.deepseek.com/v1",
+      "timeout": 120,
+      "id": "deepseek",
+      "enable": true
+    }
+  ],
+
+  "provider": [
+    {
+      "id": "deepseek/deepseek-flash",
+      "enable": true,
+      "provider_source_id": "deepseek",
+      "model": "deepseek-flash",
+      "modalities": [
+        "text",
+        "tool_use"
+      ],
+      "custom_extra_body": {
+        "temperature": 0.6,
+        "top_p": 0.9
+      },
+      "reasoning": false
+    }
+  ],
+
+  "provider_settings": {
+    "default_provider_id": "deepseek/deepseek-flash",
+    "fallback_chat_models": [
+      "deepseek/deepseek-flash"
+    ],
+    "request_max_retries": 5,
+    "web_search": false
+  }
+}

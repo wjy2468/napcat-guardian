@@ -1,0 +1,14 @@
+{
+    "host": "::",
+    "port": 6099,
+    "token": "YOUR_WEBUI_TOKEN",
+    "loginRate": 10,
+    "autoLoginAccount": "YOUR_BOT_QQ",
+    "disableWebUI": false,
+    "accessControlMode": "none",
+    "ipWhitelist": [],
+    "ipBlacklist": [],
+    "enableXForwardedFor": false,
+    "enable2FA": false,
+    "totpSecret": ""
+}

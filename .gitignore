@@ -1,0 +1,20 @@
+# ===== Logs =====
+*.log
+
+# ===== Real configs (never commit secrets) =====
+# Keep only the *.example.* templates; ignore real local copies.
+config/napcat/onebot11_*.json
+config/napcat/napcat_*.json
+config/napcat/webui.json
+config/astrbot/cmd_config.json
+
+# ===== Local guardian copy with real QQ/token =====
+# If you keep a personalized copy outside scripts/, ignore it.
+scripts/guardian.local.ps1
+
+# ===== Windows / editor =====
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+*.tmp
