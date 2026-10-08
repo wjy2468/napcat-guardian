@@ -11,9 +11,12 @@
 #   1) Keep-alive: at random intervals, the bot sends a short
 #      message to ITSELF (a private chat with its own QQ number),
 #      which creates real protocol activity and disturbs nobody.
-#   2) Watchdog: detects offline and recovers in staged, patient
-#      steps (grace period -> quick login -> restart worker ->
-#      full relaunch). Only the last step kills QQ.
+#   2) Watchdog: detects offline and recovers intelligently:
+#      * NapCat not running at all (e.g. right after boot) -> launch
+#        it immediately, do NOT wait.
+#      * Was online, brief network blip -> wait for self-heal.
+#      * Saved session clearly expired -> pop up the QR code at
+#        once, do NOT repeatedly kill/restart.
 #   3) If every automatic step fails (saved session expired),
 #      it refreshes the QR code and pops up a window asking for a
 #      manual scan.
@@ -91,6 +94,26 @@ function Get-WebUIHeaders
     return @{ Authorization = "Bearer " + $login.data.Credential }
 }
 
+# ---------------- Is the WebUI reachable? ----------------
+function Test-WebUI
+{
+    try { $null = Get-WebUIHeaders; return $true }
+    catch { return $false }
+}
+
+# ---------------- Login status (isLogin + loginError) ----------------
+function Get-LoginStatus
+{
+    try
+    {
+        $h = Get-WebUIHeaders
+        $s = Invoke-RestMethod -Uri "$WEBUI_API/api/QQLogin/CheckLoginStatus" -Method Post `
+                -Headers $h -TimeoutSec 10
+        return @{ login = [bool]$s.data.isLogin; err = [string]$s.data.loginError }
+    }
+    catch { return $null }
+}
+
 # ---------------- Check online via the local HTTP API ----------------
 # Returns: $true / $false / $null (no response - worker likely dead)
 function Get-Online
@@ -107,12 +130,81 @@ function Get-Online
     }
 }
 
-# ---------------- Recovery: staged, patient (least -> most disruptive) ----------------
+# ---------------- Launch NapCat (used when it is not running) ----------------
+# Returns: "online" / "need_scan" / "timeout"
+function Launch-NapCat
+{
+    $qqRunning = Get-Process -Name "QQ" -ErrorAction SilentlyContinue
+    if ($qqRunning)
+    {
+        Write-Log "  killing existing QQ/NapCat before launch ..."
+        taskkill /f /im NapCatWinBootMain.exe 2>$null
+        taskkill /f /im QQ.exe 2>$null
+        Start-Sleep -Seconds 6
+    }
+
+    Write-Log "  starting NapCat launcher ..."
+    Start-Process -FilePath "cmd.exe" -ArgumentList "/c", `
+        "cd /d `"$NAPCAT_DIR`" && launcher.bat $QQ_UIN" -WindowStyle Minimized
+
+    # 1) Wait for WebUI (6099) to come up (up to ~120s).
+    $webuiUp = $false
+    for ($i = 0; $i -lt 8; $i++)
+    {
+        Start-Sleep -Seconds 15
+        if (Test-WebUI) { $webuiUp = $true; break }
+    }
+    if (-not $webuiUp)
+    {
+        Write-Log "  WebUI did not start in time."
+        return "timeout"
+    }
+    Write-Log "  WebUI is up, waiting for login ..."
+
+    # 2) Wait for login; detect a clearly-expired session (manual scan).
+    for ($i = 0; $i -lt 10; $i++)
+    {
+        Start-Sleep -Seconds 15
+        $ls = Get-LoginStatus
+        if ($ls -and $ls.login) { Write-Log "  logged in."; return "online" }
+        if ($ls -and $ls.err -match "失效|重新登录|expired|过期")
+        {
+            Write-Log ("  session expired: " + $ls.err)
+            return "need_scan"
+        }
+    }
+    Write-Log "  login did not complete in time."
+    return "timeout"
+}
+
+# ---------------- Recovery: choose the right path ----------------
 # Returns $true if back online, $false if a manual QR scan is required.
 function Do-Recovery
 {
-    # ---- Phase A: grace period. A brief network blip (WiFi/router) often
-    # self-heals and the QQ client reconnects on its own. Do NOT kill it.
+    # ---- Case 1: WebUI unreachable -> NapCat is NOT running at all
+    # (typical right after boot / after a crash). Launch it immediately;
+    # waiting through the grace period here would waste minutes.
+    if (-not (Test-WebUI))
+    {
+        Write-Log "NapCat not running (WebUI unreachable), launching directly ..."
+        $r = Launch-NapCat
+        if ($r -eq "online") { Write-Log "  launch succeeded."; return $true }
+        if ($r -eq "need_scan") { Notify-Admin; return $false }
+        return $false
+    }
+
+    # ---- Case 2: WebUI is up (NapCat started) but the bot is not online.
+    # First check whether the saved session has clearly expired.
+    $ls = Get-LoginStatus
+    if ($ls -and $ls.err -match "失效|重新登录|expired|过期")
+    {
+        Write-Log ("saved session expired: " + $ls.err)
+        Notify-Admin
+        return $false
+    }
+
+    # ---- Case 3: NapCat is up, probably a brief network blip or a kick.
+    # Phase A: grace period first (wait for self-heal, do NOT kill).
     Write-Log "Phase A: grace period, waiting for network self-heal (up to 90s) ..."
     for ($i = 0; $i -lt 6; $i++)
     {
@@ -121,8 +213,7 @@ function Do-Recovery
         if ($o) { Write-Log "  self-healed during grace period."; return $true }
     }
 
-    # ---- Phase B: in-process quick login (lightweight, no restart).
-    # Covers a real kick whose saved session is still valid.
+    # Phase B: in-process quick login (lightweight, no restart).
     Write-Log "Phase B: in-process quick login (2 tries) ..."
     for ($i = 0; $i -lt 2; $i++)
     {
@@ -139,7 +230,7 @@ function Do-Recovery
         if ($o) { Write-Log "  quick login succeeded."; return $true }
     }
 
-    # ---- Phase C: restart the worker (restarts NapCat, does NOT kill QQ).
+    # Phase C: restart the worker (restarts NapCat, does NOT kill QQ).
     Write-Log "Phase C: restart worker (RestartNapCat) ..."
     try
     {
@@ -155,27 +246,11 @@ function Do-Recovery
         if ($o) { Write-Log "  worker restart succeeded."; return $true }
     }
 
-    # ---- Phase D: full relaunch (QQ frozen or gone). This is the most
-    # disruptive step, so it runs last.
-    Write-Log "Phase D: full relaunch with quick login ..."
-    $qqRunning = Get-Process -Name "QQ" -ErrorAction SilentlyContinue
-    if ($qqRunning)
-    {
-        Write-Log "  QQ process still exists; forcing full kill then relaunch ..."
-        taskkill /f /im NapCatWinBootMain.exe 2>$null
-        taskkill /f /im QQ.exe 2>$null
-        Start-Sleep -Seconds 6
-    }
-    Start-Process -FilePath "cmd.exe" -ArgumentList "/c", `
-        "cd /d `"$NAPCAT_DIR`" && launcher.bat $QQ_UIN" -WindowStyle Minimized
-    for ($i = 0; $i -lt 5; $i++)
-    {
-        Start-Sleep -Seconds 15
-        $o = Get-Online
-        if ($o) { Write-Log "  full relaunch succeeded."; return $true }
-    }
-
-    Write-Log "  full relaunch did NOT come online; session likely expired."
+    # Phase D: last resort - full relaunch.
+    Write-Log "Phase D: full relaunch ..."
+    $r = Launch-NapCat
+    if ($r -eq "online") { Write-Log "  full relaunch succeeded."; return $true }
+    if ($r -eq "need_scan") { Write-Log "  session expired after relaunch."; Notify-Admin; return $false }
     return $false
 }
 
