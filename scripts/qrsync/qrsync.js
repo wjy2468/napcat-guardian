@@ -68,15 +68,20 @@ const state = { seenEver: false, goneAt: 0, lastMtime: 0, lastSize: 0, refreshOb
 
 // 机器人登录状态：由 D:\napcat\guardian.ps1 写入，判断"码是新的但机器人其实没登录"这类情况
 const BOT_STATE_FILE = path.join(__dirname, 'login-state.json');
+const BOT_STATE_STALE_MS = 15 * 60 * 1000;   // 记录超过这么久就不再当作"当前在线"
 function botState() {
   try {
     const j = JSON.parse(fs.readFileSync(BOT_STATE_FILE, 'utf8'));
     const age = Date.parse(j.at);
+    const ageMs = Number.isFinite(age) ? Date.now() - age : null;
     return {
       state: String(j.state || 'unknown'),
       note: String(j.note || ''),
       at: j.at || null,
-      ageMs: Number.isFinite(age) ? Date.now() - age : null,
+      ageMs,
+      // guardian 只在状态**变化**时写这个文件，所以 online 只代表"自 at 起在线"。
+      // 页面必须知道记录有多旧，否则掉线半小时了还在显示"在线运行中"。
+      stale: ageMs == null || ageMs > BOT_STATE_STALE_MS,
     };
   } catch { return null; }
 }
@@ -177,14 +182,19 @@ async function tick(){
     }
     else { $('t').textContent='等待二维码出现…'; }
     const b=s.bot, bd=$('b');
+    const mins = (b && b.ageMs!=null) ? Math.round(b.ageMs/60000) : null;
     if(b && b.state!=='online'){
-      const mins=b.ageMs==null?null:Math.round(b.ageMs/60000);
       const label = b.state==='need_scan' ? '⚠ 机器人尚未登录：请扫下面的码'
                   : b.state==='starting' ? '看护刚启动，正在检查登录状态…'
                   : '机器人状态：'+b.state;
       bd.textContent = label + (mins!==null && mins>0 ? '（'+mins+' 分钟前）' : '');
       bd.className='banner'; bd.style.display='';
-    } else if(b && b.state==='online'){
+    } else if(b && b.stale){
+      // guardian 只在状态变化时写这条记录，'online' 只能说明"自 at 起在线"。
+      // 记录太旧时必须说实话，否则页面会一直显示"在线运行中"，而机器人其实已经掉了。
+      bd.textContent = '登录状态记录已过期（' + (mins!==null ? mins : '?') + ' 分钟前），机器人可能已掉线';
+      bd.className='banner'; bd.style.display='';
+    } else if(b){
       bd.textContent='机器人已登录，在线运行中';
       bd.className='banner ok'; bd.style.display='';
     } else { bd.style.display='none'; }
