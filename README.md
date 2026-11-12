@@ -161,7 +161,12 @@ napcat-guardian/
 │   ├── install_guardian.ps1         # 安装器（注册为计划任务）
 │   ├── install_guardian.bat         # 自提权安装器（右键管理员运行）
 │   ├── network_fix.ps1              # 关闭 WiFi 网卡省电，网络更稳
-│   └── start_bot.bat                # 可选：手动一键启动 AstrBot + NapCat
+│   ├── start_bot.bat                # 可选：手动一键启动 AstrBot + NapCat
+│   └── qrsync/                      # 可选：把二维码同步成网页，人在外面也能扫
+│       ├── qrsync.js                # 本地二维码网页（:8430，带访问密钥）
+│       ├── daemon.ps1               # 常驻守护：保活服务 + 公网隧道 + 端到端自检
+│       ├── start-qr.ps1             # 一次性前台模式（扫完 Ctrl+C 即收摊）
+│       └── config.example.json      # 配置示例（端口/二维码路径/隧道供应商）
 ├── config/
 │   ├── napcat/
 │   │   ├── onebot11.example.json    # OneBot11：本地 HTTP API + 反向 WS（保活前提）
@@ -172,7 +177,8 @@ napcat-guardian/
 └── docs/
     ├── 部署指南.md
     ├── 原理说明.md
-    └── 常见问题.md
+    ├── 常见问题.md
+    └── 审查修复记录.md              # 一份完整的代码审查清单（含"看过但不修"的理由）
 ```
 
 ## 快速开始
@@ -185,17 +191,29 @@ napcat-guardian/
 2. 打开 `scripts/guardian.ps1`，改顶部 **Configuration 区**这几项（其余保持默认即可）：
 
 ```powershell
-$QQ_UIN     = "你的机器人QQ号"
-$NAPCAT_DIR = "D:\napcat\NapCat.Shell"
-$WEBUI_TOK  = "你的 NapCat WebUI token"      # 在 NapCat 的 config/webui.json 里
-$LOG_FILE   = "D:\napcat\guardian.log"
-$QR_FILE    = "D:\napcat\NapCat.Shell\cache\qrcode.png"
-$STATE_FILE = "D:\napcat\qrsync\login-state.json"
-$QQ_DATA_DIR = "D:\napcat\qqdata"            # 留空 = 与桌面 QQ 共用数据目录
+$QQ_UIN      = "YOUR_BOT_QQ"        # 机器人 QQ 号
+$NAPCAT_HOME = "D:\napcat"          # 部署根目录：日志/心跳/标志文件都写在这里
+$WEBUI_TOK   = "YOUR_WEBUI_TOKEN"   # NapCat WebUI token（在 NapCat 的 config/webui.json 里）
 ```
 
-3. 确保 NapCat 已开启**本地 HTTP API**（默认 `http://127.0.0.1:3000`），参考 `config/napcat/onebot11.example.json`，复制到 NapCat 的 `config/` 并改名为 `onebot11_<你的机器人QQ>.json`。
-4. 建议在 `config/napcat_<QQ>.json` 里把 `fileLog` 设为 `true`，否则"发送失败探测"读不到日志（会退化回只看 `get_status`）。
+其余路径（`NapCat.Shell\cache\qrcode.png`、`guardian.log`、`guardian.heartbeat`、
+`force-relaunch.flag`、`qrsync\login-state.json`、`qqdata` …）全部由 `$NAPCAT_HOME`
+自动派生，**不用再逐个改**；换机器只需要改上面第 2 行。
+
+3. 敏感项不要写进脚本，放到同目录的 `guardian.config.json`（该文件已被 `.gitignore` 忽略）：
+
+```json
+{
+  "webuiToken": "你的 NapCat WebUI token",
+  "ntfyTopic": "你的 ntfy 主题名",
+  "qrPageUrl": "https://你的域名/?k=你的密钥",
+  "notifyNtfy": true,
+  "notifyToast": true
+}
+```
+
+4. 确保 NapCat 已开启**本地 HTTP API**（默认 `http://127.0.0.1:3000`），参考 `config/napcat/onebot11.example.json`，复制到 NapCat 的 `config/` 并改名为 `onebot11_<你的机器人QQ>.json`。
+5. 建议在 `config/napcat_<QQ>.json` 里把 `fileLog` 设为 `true`，否则"发送失败探测"读不到日志（会退化回只看 `get_status`）。
 
 ### 第 2 步：安装守护任务
 
@@ -215,6 +233,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\astrbot_watchdog.ps1
 `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup`，目标参数为
 `-NoProfile -WindowStyle Hidden -File "<脚本完整路径>"`。
 
+停掉它：`powershell -NoProfile -File scripts\astrbot_watchdog.ps1 -Stop`
+（早期版本要"先抢到互斥体才停"，而互斥体恰恰被正在跑的那份占着 —— 结果 `-Stop`
+一次也停不掉，只能去任务管理器里找 PID；现在改为按命令行精确匹配本脚本进程后结束。）
+
 ### 第 4 步：（可选）修复网络
 
 用 WiFi 挂机的话，以管理员身份再跑一次：
@@ -224,6 +246,24 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\network_fix.ps1
 ```
 
 它会关闭网卡"空闲断电省电"、把无线适配器调到最高性能，并重启网卡（会断网几秒）。
+
+### 第 5 步：（可选）人在外面也能扫码
+
+NapCat 掉了登录态需要扫码时，人往往不在电脑前。`scripts/qrsync/` 把 `cache\qrcode.png`
+变成一张"永远显示最新一版"的网页，再套一条公网隧道，手机在任何地方都能扫：
+
+```powershell
+# 一次性：前台跑，扫完按 Ctrl+C，服务和隧道一起收干净
+powershell -ExecutionPolicy Bypass -File scripts\qrsync\start-qr.ps1
+
+# 或者注册成计划任务常驻（daemon.ps1），断了自动重连
+```
+
+页面用 `?k=<密钥>` 校验（`key.txt` 自动生成 24 位随机串），错误一律 404，不给任何提示。
+隧道按 `ngrok → cloudflare → localhost.run → pinggy` 顺序尝试，见 `config.example.json`。
+
+> 为什么值得做：被踢下线后"及时扫码"是唯一真正有效的人工补救。等你有空回家再扫，
+> 机器人已经掉线一整天了。
 
 ### 验证
 
@@ -240,7 +280,9 @@ Get-Content D:\napcat\guardian.log -Tail 20       # 应能看到 started / keep-
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
-| `$KEEPALIVE_MIN` / `$KEEPALIVE_MAX` | 1800 / 2700 秒 | 保活间隔随机区间（30–45 分钟）。实测踢线并非由静默触发，间隔不必很短；太频繁反而更像脚本 |
+| `$KEEPALIVE_MIN` / `$KEEPALIVE_MAX` | 1200 / 2400 秒 | 保活间隔随机区间（20–40 分钟），长尾分布，少数拉长到几小时。实测踢线并非由静默触发，间隔不必很短；太频繁反而更像脚本 |
+| `$KEEPALIVE_IDLE_MIN` | 25 分钟 | 距最后一次**真实收发**不足这么久就不发保活 —— 空闲驱动，避免"天天整点自言自语" |
+| `$KEEPALIVE_NIGHT_FROM` / `_TO` | 1 / 7 | 凌晨 01:00–07:00 完全不发 |
 | `$CHECK_INTERVAL` | 20 秒 | 看门狗检测间隔 |
 | `$OFFLINE_LIMIT` | 2 | 连续几次异常才判定需要恢复 |
 | `$RECOVER_COOLDOWN` | 300 秒 | 两次恢复动作之间的最小间隔 |
@@ -286,6 +328,16 @@ Get-Content D:\napcat\guardian.log -Tail 20       # 应能看到 started / keep-
 10. **控制台窗口的隐藏方式很讲究**。`Start-Process -WindowStyle Hidden` 在某些 Win11 环境下会被 Windows Terminal 接管而强制显示窗口；用 `ProcessStartInfo` + `CreateNoWindow = $true` 才可靠，且用户关掉窗口不会连带杀死进程。
 11. **普通（非管理员）PowerShell 注册计划任务会 `Access denied`**，所以安装器需要管理员；但 `Start-ScheduledTask` / `Stop-ScheduledTask` 在普通权限下可用。
 12. **PowerShell 脚本里的中文必须先存成 UTF-8 with BOM**，否则 Windows PowerShell 5.1 按 GBK 解析，报 `The string is missing the terminator` 之类莫名其妙的语法错误。
+13. **`Invoke-RestMethod` 用字符串 Body 发中文，会被按 ASCII 编码成 `?`**。PowerShell 5.1 取不到 charset 时默认用 ASCII（不是 UTF-8、也不是系统 ANSI），一个汉字变一个 `?`，`Content-Length` 恰好等于字符数；只加 `-ContentType 'text/plain'` 也**不会**修好，必须显式声明 charset。正确写法：
+
+    ```powershell
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($body)
+    Invoke-RestMethod -Uri $url -Method Post -Body $bytes `
+        -ContentType 'text/plain; charset=utf-8'
+    ```
+
+    顺带：ntfy 的自定义 `Title` 头只接受 ASCII/URL 编码，中文标题要转 RFC 2047（`=?UTF-8?B?<base64>?=`），否则整个请求会被拒。
+14. **日志"增量读"遇到文件被重建会永久失明**。记录已读偏移 `pos` 的写法，如果判断成 `if (len -le pos) { return }`，那么日志被截断/重建（NapCat 重启就会）之后 `len` 永远小于 `pos`，从此一条新日志都读不到，发送失败探测静默失效。正确做法是 `len < pos` 时把 `pos` 归零重读；首次见到文件时把 `pos` 设成文件末尾，否则会把几天前的旧报错当成"刚刚发生"。
 
 ## 防风控 / 养号建议
 
@@ -314,6 +366,12 @@ Get-Content D:\napcat\guardian.log -Tail 20       # 应能看到 started / keep-
 
 - **Q：`msg.exe` 弹窗不出现？**
   A：部分家庭版/精简版 Windows 没有 `msg.exe`，可改用其它通知方式（如发邮件、Server 酱、读 `login-state.json` 的网页）。
+
+- **Q：手机收到的通知里中文全变成 `?`？**
+  A：发送端编码问题，不是接收端。`Invoke-RestMethod` 传字符串正文时会按 ASCII 编码，见[踩坑记录第 13 条](#关键踩坑记录)。本仓库已修复：正文先 `UTF8.GetBytes()`，再带 `charset=utf-8` 发出。
+
+- **Q：人不在家，机器人要扫码怎么办？**
+  A：用 `scripts/qrsync/`。它把二维码变成网页 + 公网隧道，手机随时能扫；页面上还会显示看护写出的 `login-state.json` 状态（需要扫码 / 已上线 / 正在恢复）。
 
 - **Q：AstrBot 没被拉起来？**
   A：检查 `scripts/astrbot_watchdog.ps1` 里的 `$ASTRBOT_DIR`、`$PYTHON`，并确认它是以**普通权限**运行的。
