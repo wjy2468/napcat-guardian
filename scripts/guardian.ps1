@@ -1,48 +1,72 @@
 ﻿# ============================================================
-#  NapCat Guardian v2 - Keep-alive + staged auto-recovery
-#  ----------------------------------------------------------
-#  1) Keep-alive: the bot sends a short message to ITSELF at random
-#     intervals (30-45 min by default). This creates real protocol
-#     activity without disturbing anyone, and doubles as a health
-#     probe: a non-zero retcode means the connection is already dead.
+#  NapCat Guardian - Keep-alive + Auto-recovery
+#  - Keep-alive: bot sends a message to ITSELF at random intervals
+#    (no one else is disturbed), creating real protocol activity
+#  - Watchdog: detects offline and recovers intelligently:
+#      * NapCat not running at all (e.g. after boot) -> launch it
+#        immediately, do NOT wait.
+#      * Was online, brief network blip -> wait for self-heal.
+#      * Saved session clearly expired -> pop up QR code at once,
+#        do NOT repeatedly kill/restart.
 #
-#  2) Watchdog (every 20 s, 2 consecutive failures = recover):
-#       * NapCat not running (boot/crash)  -> launch immediately
-#       * zombie session (isLogin=true but -> RestartNapCat, then
-#         loginError="登录态已失效")            wait for cached login
-#       * send failures in NapCat log      -> restart worker before
-#         ("网络连接异常")                      get_status notices
-#       * worker dead / stuck              -> RestartNapCat
-#       * still offline after that         -> full relaunch
-#       * login invalid / needs QR         -> wait for a scan
-#
-#  3) Safety rails (learned from real restart storms that got
-#     accounts frozen by Tencent risk control):
-#       * at most ONE auto-recovery per outage, then 120-min circuit
-#       * 02:00-07:00 quiet window, at most one attempt every 3 h
-#       * never kill a desktop QQ the user started manually
-#       * no console windows (CreateNoWindow), close-safe
-#
-#  Recommended: install as a Scheduled Task with HIGHEST privileges
-#  (run scripts\install_guardian.bat as administrator once).
+#  Recommended to run as a Scheduled Task with HIGHEST privileges
+#  (run the installer .bat as administrator once).
 # ============================================================
 
 # ---------------- Configuration ----------------
-$QQ_UIN     = "YOUR_BOT_QQ"
+# 日常只需要改这三行：机器人 QQ 号、部署根目录、WebUI token。
+$QQ_UIN      = "YOUR_BOT_QQ"
+$NAPCAT_HOME = "D:\napcat"          # 部署根目录（guardian.ps1 / 日志 / 标志文件都放这里）
+$WEBUI_TOK   = "YOUR_WEBUI_TOKEN"
+
 $HTTP_API   = "http://127.0.0.1:3000"
 $WEBUI_API  = "http://127.0.0.1:6099"
-$WEBUI_TOK  = "YOUR_WEBUI_TOKEN"
-$NAPCAT_DIR = "D:\napcat\NapCat.Shell"
-$LOG_FILE   = "D:\napcat\guardian.log"
-$QR_FILE    = "D:\napcat\NapCat.Shell\cache\qrcode.png"
-# 机器人登录状态文件：给 qrsync 网页读，用来在页面上显示"需要扫码"提示
-$STATE_FILE = "D:\napcat\qrsync\login-state.json"
 
-# Keep-alive interval range (seconds).
+# 其余路径全部由 $NAPCAT_HOME 派生：以前 D:\napcat 被硬编码了十几次，
+# 换目录（或把这套东西搬到另一台机器）时漏改一处就会静默写错文件。
+$NAPCAT_DIR     = Join-Path $NAPCAT_HOME "NapCat.Shell"
+$LOG_FILE       = Join-Path $NAPCAT_HOME "guardian.log"
+$QR_FILE        = Join-Path $NAPCAT_DIR  "cache\qrcode.png"
+$KICK_LOG       = Join-Path $NAPCAT_HOME "kick.log"
+$HEARTBEAT_FILE = Join-Path $NAPCAT_HOME "guardian.heartbeat"
+$AB_FLAG        = Join-Path $NAPCAT_HOME "restart-astrbot.flag"
+$FORCE_FLAG     = Join-Path $NAPCAT_HOME "force-relaunch.flag"
+# 机器人登录状态文件：给 qrsync 网页读，用来在页面上显示"需要扫码"提示
+$STATE_FILE = Join-Path $NAPCAT_HOME "qrsync\login-state.json"
+
+# ---------------- 敏感配置：从 guardian.config.json 读取（该文件不进 git） ----------------
+# 文件格式（缺项就用本文件里的默认值）：
+#   { "webuiToken": "xxx", "qrPageUrl": "https://...", "ntfyTopic": "xxx",
+#     "notifyNtfy": true, "notifyToast": true }
+$NOTIFY_NTFY       = $true
+$NOTIFY_TOAST      = $true
+$NOTIFY_NTFY_TOPIC = ""
+$QR_PAGE_URL       = ""
+$CFG_PATH = Join-Path $NAPCAT_HOME "guardian.config.json"
+if (Test-Path $CFG_PATH)
+{
+    try
+    {
+        $gcfg = Get-Content $CFG_PATH -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($gcfg.webuiToken) { $WEBUI_TOK = [string]$gcfg.webuiToken }
+        if ($gcfg.ntfyTopic) { $NOTIFY_NTFY_TOPIC = [string]$gcfg.ntfyTopic }
+        if ($gcfg.qrPageUrl) { $QR_PAGE_URL = [string]$gcfg.qrPageUrl }
+        if ($null -ne $gcfg.notifyNtfy) { $NOTIFY_NTFY = [bool]$gcfg.notifyNtfy }
+        if ($null -ne $gcfg.notifyToast) { $NOTIFY_TOAST = [bool]$gcfg.notifyToast }
+    }
+    catch { }
+}
+
+# Keep-alive interval range (seconds) —— 空闲驱动 + 重尾分布。
 # 2026-11-12: 实测 6 次被踢全部发生在活跃对话中（最近一次距上条保活仅 4 分钟），
-# 说明"静默被踢"不是当前的主要掉线形态；保活只剩健康探针作用，因此放宽到 30-45 分钟。
-$KEEPALIVE_MIN = 1800   # 30 min
-$KEEPALIVE_MAX = 2700   # 45 min
+# 说明"静默被踢"不是当前的主要掉线形态；保活只剩健康探针作用。
+# 因此改成：只有在"连续 KEEPALIVE_IDLE_MIN 分钟没有任何收发"时才发一条，
+# 且间隔按混合分布抽（多数 20-40 分钟，少数几小时），避免长期固定周期太像脚本。
+$KEEPALIVE_MIN       = 1200   # 短档下限 20 min
+$KEEPALIVE_MAX       = 2400   # 短档上限 40 min
+$KEEPALIVE_IDLE_MIN  = 25     # 距最后一次真实收发 < 25 分钟就不发
+$KEEPALIVE_NIGHT_FROM = 1     # 01:00-07:00 不发（夜里没人看，也不打扰）
+$KEEPALIVE_NIGHT_TO   = 7
 
 # Watchdog
 $CHECK_INTERVAL   = 20    # seconds between status checks
@@ -81,7 +105,7 @@ $FOREIGN_WAIT_MIN = 30
 # NapCat 4.18+ 支持环境变量 NAPCAT_QQ_DATA_DIR：指到独立目录后，机器人拥有
 # 自己的一份 QQ 数据，桌面 QQ 和大号就互不影响了。
 # 代价：切换的那一刻机器人要重新扫码登录一次（新目录里没有登录票）。
-$QQ_DATA_DIR = "D:\napcat\qqdata"   # 留空 = 不隔离（与桌面 QQ 共用）
+$QQ_DATA_DIR = Join-Path $NAPCAT_HOME "qqdata"   # 留空 = 不隔离（与桌面 QQ 共用）
 
 # Random natural-looking keep-alive messages (sent to self)
 $KA_POOL = @(
@@ -96,13 +120,146 @@ $KA_POOL = @(
 )
 
 # ---------------- Logging ----------------
+# 实测 11.2 KB/天（约 4 MB/年），正常不会爆；但重启风暴/熔断期会突然放量，
+# 所以按 4 MB 轮转，最多占 8 MB（guardian.log + guardian.log.1）。
+$LOG_MAX_BYTES = 4MB
 function Write-Log($msg)
 {
     $line = "[{0}] {1}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $msg
+    try
+    {
+        if (Test-Path $LOG_FILE)
+        {
+            if ((Get-Item $LOG_FILE).Length -gt $LOG_MAX_BYTES)
+            {
+                Move-Item -Path $LOG_FILE -Destination "$LOG_FILE.1" -Force
+            }
+        }
+    }
+    catch { }
     Add-Content -Path $LOG_FILE -Value $line -Encoding UTF8
 }
 
-# ---------------- 对外公布登录状态（qrsync 页面读这个文件） ----------------
+# 心跳：<pid>|<时间>。另一个实例靠它判断"这个 guardian 还活着吗"。
+# 必须尽早定义 —— 恢复流程里有几段长达 10 分钟的等待（Launch-NapCat 等 WebUI、
+# Wait-Scan 等扫码），如果那段时间不写心跳，第二个实例会以为它是僵死进程而杀掉它。
+function Write-Heartbeat
+{
+    try
+    {
+        $txt = "{0}|{1}" -f $PID, (Get-Date -Format "yyyy-MM-ddTHH:mm:ss")
+        [System.IO.File]::WriteAllText($HEARTBEAT_FILE, $txt, (New-Object System.Text.UTF8Encoding($false)))
+    }
+    catch { }
+}
+
+# ---------------- 通知通道（ntfy.sh 推送 + 本机 toast），按状态跃迁去重 ----------------
+# 家庭版没有 msg.exe，所以原来那条"弹窗提醒"其实大概率没送达。
+$script:NotifyLast = @{}
+
+function Show-Toast([string]$title, [string]$body)
+{
+    if (-not $NOTIFY_TOAST) { return }
+    try
+    {
+        [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
+        $tpl = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent(
+            [Windows.UI.Notifications.ToastTemplateType]::ToastText02)
+        $texts = $tpl.GetElementsByTagName("text")
+        $texts.Item(0).AppendChild($tpl.CreateTextNode($title)) | Out-Null
+        $texts.Item(1).AppendChild($tpl.CreateTextNode($body)) | Out-Null
+        $toast = [Windows.UI.Notifications.ToastNotification]::new($tpl)
+        [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier("NapCat Guardian").Show($toast)
+    }
+    catch { }
+}
+
+# HTTP 头只允许 ASCII：标题里的中文如果直接塞进 Title 头，.NET 会抛异常或写成 '?'。
+# ntfy 支持 RFC 2047 的 encoded-word（=?UTF-8?B?<base64>?=），用它承载非 ASCII 标题。
+function ConvertTo-NtfyHeaderText([string]$s)
+{
+    if ([string]::IsNullOrEmpty($s)) { return "" }
+    $ascii = $true
+    foreach ($ch in $s.ToCharArray()) { if ([int]$ch -gt 127) { $ascii = $false; break } }
+    if ($ascii) { return $s }
+    $b64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($s))
+    return "=?UTF-8?B?" + $b64 + "?="
+}
+
+function Send-Notification([string]$key, [string]$title, [string]$body, [string]$priority = "default")
+{
+    $now = Get-Date
+    # 同一类事件 30 分钟内只推一次，避免熔断期刷屏
+    if ($script:NotifyLast.ContainsKey($key) -and (($now - $script:NotifyLast[$key]).TotalMinutes -lt 30))
+    {
+        Write-Log ("notify(" + $key + ") suppressed (dedupe 30min)")
+        return
+    }
+    $script:NotifyLast[$key] = $now
+
+    if ($NOTIFY_NTFY -and $NOTIFY_NTFY_TOPIC)
+    {
+        try
+        {
+            # ---- 中文变「?」的根因（2026-11-12 实测） ----
+            # Invoke-RestMethod 拿到的是 .NET String：它按 ContentType 里的 charset 编码请求体，
+            # 没写 charset 时退回 ASCII（单字节），于是每个中文字符都变成 '?'，
+            # 而且 Content-Length 恰好等于字符数（69 字节）—— 看上去"发出去了"，其实是问号。
+            # 只写 ContentType "text/plain" 而漏掉 charset 也一样是 '?'（同样实测过）。
+            # 正确做法：自己把正文编成 UTF-8 字节数组，并显式声明 charset=utf-8。
+            $bytes  = [System.Text.Encoding]::UTF8.GetBytes($body)
+            $header = @{
+                Title    = (ConvertTo-NtfyHeaderText $title)   # HTTP 头只能是 ASCII，中文按 RFC 2047 编码
+                Priority = $priority
+                Tags     = "robot"
+            }
+            Invoke-RestMethod -Uri ("https://ntfy.sh/" + $NOTIFY_NTFY_TOPIC) -Method Post `
+                -Body $bytes -ContentType "text/plain; charset=utf-8" -TimeoutSec 15 `
+                -Headers $header | Out-Null
+            Write-Log ("notify(ntfy) sent: " + $title)
+        }
+        catch { Write-Log ("notify(ntfy) failed: " + $_.Exception.Message) }
+    }
+    Show-Toast $title $body
+}
+
+# ---------------- 最近一次真实收发时间（用来判断"空闲"） ----------------
+function Get-NapCatLastActivity
+{
+    try
+    {
+        $f = Get-ChildItem -Path $NAP_LOG_DIR -Filter *.log -File -ErrorAction SilentlyContinue |
+             Sort-Object LastWriteTime -Descending | Select-Object -First 1
+        if ($f) { return $f.LastWriteTime }
+    }
+    catch { }
+    # 没有日志目录（NapCat 关掉了 fileLog、或还没跑起来）时返回 MinValue。
+    # 以前这里返回 Get-Date，等于宣称"刚刚还有收发"，空闲时间永远是 0，
+    # 保活（健康探针）就再也不会发出去 —— 日志不存在恰恰是最需要探活的时候。
+    return [DateTime]::MinValue
+}
+
+# ---------------- 下一次保活时间：重尾分布 ----------------
+function Get-NextKeepAliveDelay
+{
+    $r = Get-Random -Minimum 0 -Maximum 100
+    if ($r -lt 70)  { return (Get-Random -Min $KEEPALIVE_MIN -Max $KEEPALIVE_MAX) }        # 70%: 20-40 min
+    elseif ($r -lt 90) { return (Get-Random -Min 3600 -Max 7200) }                          # 20%: 1-2 h
+    else { return (Get-Random -Min 10800 -Max 21600) }                                      # 10%: 3-6 h
+}
+
+# ---------------- 被踢事件记录（供后续统计"多久被踢一次"） ----------------
+function Add-KickLog([string]$detail)
+{
+    try
+    {
+        $line = "[{0}] {1}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $detail
+        Add-Content -Path $KICK_LOG -Value $line -Encoding UTF8
+    }
+    catch { }
+}
+
+
 $script:LastState = ""
 function Set-BotState([string]$state, [string]$note)
 {
@@ -117,6 +274,8 @@ function Set-BotState([string]$state, [string]$note)
     try
     {
         $json = $obj | ConvertTo-Json -Compress
+        $stDir = Split-Path $STATE_FILE -Parent
+        if ($stDir -and -not (Test-Path $stDir)) { New-Item -ItemType Directory -Force -Path $stDir | Out-Null }
         $tmp  = "$STATE_FILE.tmp"
         [System.IO.File]::WriteAllText($tmp, $json, (New-Object System.Text.UTF8Encoding($false)))
         Move-Item -Path $tmp -Destination $STATE_FILE -Force
@@ -249,6 +408,7 @@ function Stop-NapCatOwned
 # 用增量读取（记住文件偏移），避免每轮都从头扫一遍几十 KB 的日志。
 $script:NapLogPath  = $null
 $script:NapLogPos   = 0
+$script:NapLogPrevWrite = $null
 $script:SendFailAts = New-Object System.Collections.ArrayList
 
 function Read-NewNapCatLog
@@ -260,10 +420,24 @@ function Read-NewNapCatLog
 
     if ($script:NapLogPath -ne $f.FullName)
     {
-        $script:NapLogPath = $f.FullName
-        $script:NapLogPos  = 0
+        # 第一次看到这个日志文件（guardian 刚起来 / 日志轮转成新名字）：
+        # 直接把读指针放到文件末尾。以前这里是 0，于是启动后第一轮就把整份历史
+        # 日志重读一遍，里面几天前的"网络连接异常"被当成刚刚发生，
+        # 立刻凑够 2 条触发一次假的 connection reset，还往 kick.log 里写假记录。
+        $script:NapLogPath      = $f.FullName
+        $script:NapLogPos       = $f.Length
+        $script:NapLogPrevWrite = $f.LastWriteTime
+        return
     }
-    if ($f.Length -le $script:NapLogPos) { return }
+    if ($f.Length -lt $script:NapLogPos)
+    {
+        # 文件变短了 = 被截断/删除重建（NapCat 重启时会重开日志）。
+        # 以前的写法直接 return，从此这个文件长度永远 <= 记住的偏移量，
+        # 等于永久失明，发送失败探测彻底失效。这里重置为从头读新内容。
+        $script:NapLogPos       = 0
+        $script:NapLogPrevWrite = $null
+    }
+    if ($f.Length -eq $script:NapLogPos) { return }
 
     $txt = $null
     try
@@ -283,11 +457,22 @@ function Read-NewNapCatLog
     catch { return }
 
     if (-not $txt) { return }
+    $now = Get-Date
+    # 本次新增内容之前，日志静了多久（用于分析"被踢前安静了多长时间"）
+    $gapMin = $null
+    if ($script:NapLogPrevWrite) { $gapMin = [int]($f.LastWriteTime - $script:NapLogPrevWrite).TotalMinutes }
+    $script:NapLogPrevWrite = $f.LastWriteTime
     foreach ($line in ($txt -split "`n"))
     {
         if ($line -match '网络连接异常|EventChecker Failed')
         {
-            [void]$script:SendFailAts.Add((Get-Date))
+            [void]$script:SendFailAts.Add($now)
+        }
+        if ($line -match 'KickedOffLine|下线通知')
+        {
+            $gapTxt = if ($null -ne $gapMin) { "$gapMin min" } else { "unknown" }
+            Add-KickLog ("KICKED | log=" + $f.Name + " | quiet_before_kick=" + $gapTxt)
+            Write-Log ("kick detected in NapCat log (quiet before kick: " + $gapTxt + ")")
         }
     }
 }
@@ -328,6 +513,7 @@ function Wait-Login
     {
         Start-Sleep -Seconds 15
         $waited += 15
+        Write-Heartbeat
         $online = Get-Online
         if ($online) { return $true }
         $ls = Get-LoginStatus
@@ -429,6 +615,7 @@ function Launch-NapCat
     for ($i = 0; $i -lt 8; $i++)
     {
         Start-Sleep -Seconds 15
+        Write-Heartbeat
         if (Test-WebUI) { $webuiUp = $true; break }
     }
     if (-not $webuiUp)
@@ -446,6 +633,7 @@ function Launch-NapCat
     {
         Start-Sleep -Seconds 15
         $waited += 15
+        Write-Heartbeat
         $ls = Get-LoginStatus
         if ($ls -and $ls.login) { Write-Log "  logged in."; return "online" }
         if ($ls -and $ls.err -match "失效|重新登录|expired|过期")
@@ -543,6 +731,7 @@ function Do-Recovery
     for ($i = 0; $i -lt 6; $i++)
     {
         Start-Sleep -Seconds 15
+        Write-Heartbeat
         $o = Get-Online
         if ($o) { Write-Log "  self-healed during grace period."; return "online" }
     }
@@ -560,6 +749,7 @@ function Do-Recovery
         }
         catch { Write-Log ("  quick login call error: " + $_.Exception.Message) }
         Start-Sleep -Seconds 15
+        Write-Heartbeat
         $o = Get-Online
         if ($o) { Write-Log "  quick login succeeded."; return "online" }
     }
@@ -594,11 +784,13 @@ function Notify-Admin
         Invoke-RestMethod -Uri "$WEBUI_API/api/QQLogin/RefreshQRcode" -Method Post `
             -Headers $h -TimeoutSec 15 | Out-Null
     } catch {}
-    # native Windows popup (msg.exe is available on most Windows editions)
-    $msg = "NapCat bot ($QQ_UIN) is offline and could not auto-login. " +
-           "Please scan the QR code in the NapCat window. " +
-           "QR picture: $NAPCAT_DIR\cache\qrcode.png"
-    try { msg.exe * $msg } catch {}
+    # 通知：ntfy.sh 推送（手机收到就能点开扫码）+ 本机 toast。
+    # msg.exe 只在专业/企业版的终端服务里存在，家庭版没有，所以降级为"顺带试一下"。
+    $body = "机器人 QQ $QQ_UIN 离线，自动登录失败，需要扫码。`n"
+    if ($QR_PAGE_URL) { $body += "扫码页（自动换码）: $QR_PAGE_URL`n" }
+    $body += "本机图片: $NAPCAT_DIR\cache\qrcode.png"
+    Send-Notification "need_scan" "NapCat bot needs QR scan" $body "high"
+    try { msg.exe * $body } catch {}
 }
 
 # ---------------- 等人扫码：盯着登录状态，扫上就恢复 ----------------
@@ -609,6 +801,7 @@ function Wait-Scan
     for ($i = 0; $i -lt 40; $i++)     # 最多盯 10 分钟
     {
         Start-Sleep -Seconds 15
+        Write-Heartbeat
         $qrAge = 9999
         if (Test-Path $QR_FILE) { $qrAge = ((Get-Date) - (Get-Item $QR_FILE).LastWriteTime).TotalSeconds }
         $ls = Get-LoginStatus
@@ -627,6 +820,12 @@ function Wait-Scan
     return $false
 }
 
+# ---------------- AstrBot 为什么不在这里起 ----------------
+# 这个文件曾经有个 Ensure-AstrBot()，但从来没被调用过（AstrBot 由用户级
+# astrbot_watchdog.ps1 负责拉起，见下面主流程里的注释）。它里面还硬编码了
+# "C:\Users\<用户名>\...\pythonw.exe" 这种本机路径，既误导读者又泄露隐私，已删除。
+# 如果你想把 AstrBot 也交给 guardian 管，请用 $NAPCAT_HOME 派生路径并加上权限考量，
+# 不要用 Highest 权限去跑带"电脑操控"插件的东西。
 # ---------------- Keep-alive: send one message to self ----------------
 function Send-KeepAlive
 {
@@ -635,8 +834,11 @@ function Send-KeepAlive
         $text = $KA_POOL | Get-Random
         $msg = "{0}  {1}" -f (Get-Date -Format "HH:mm"), $text
         $body = @{ user_id = $QQ_UIN; message = $msg } | ConvertTo-Json
+        # 同样的 UTF-8 陷阱：字符串 body + ContentType 不带 charset 会被按 ASCII 编码。
+        # 现在正文是纯 ASCII 看不出问题，但改一个字就会变成 '?'，一起修掉。
         $r = Invoke-RestMethod -Uri "$HTTP_API/send_private_msg" -Method Post `
-                -Body $body -ContentType "application/json" -TimeoutSec 15
+                -Body ([System.Text.Encoding]::UTF8.GetBytes($body)) `
+                -ContentType "application/json; charset=utf-8" -TimeoutSec 15
         if ($r.retcode -eq 0) { Write-Log ("keep-alive sent: " + $msg) }
         else { Write-Log ("keep-alive retcode: " + $r.retcode) }
     }
@@ -644,7 +846,89 @@ function Send-KeepAlive
 }
 
 # ================= Main =================
+
+# ---- 单实例保护：互斥体 + 心跳 ----
+# 计划任务的 -MultipleInstances IgnoreNew 只能防"任务被再次触发"，
+# 防不住手动运行，也防不住旧实例僵死（那时 IgnoreNew 会让新实例永远等）。
+# 做法：抢 Global 互斥体；抢不到就看心跳文件 ——
+#   心跳 <3 分钟 → 另一实例正常在跑，直接退出；
+#   心跳 >=3 分钟 → 旧实例僵死，杀掉它再接管。
+$mutexName = "Global\NapCatGuardian"
+$script:Mutex = $null
+$gotMutex = $false
+try
+{
+    $script:Mutex = New-Object System.Threading.Mutex($false, $mutexName)
+}
+catch
+{
+    $mutexName = "Local\NapCatGuardian"
+    $script:Mutex = New-Object System.Threading.Mutex($false, $mutexName)
+}
+try { $gotMutex = $script:Mutex.WaitOne(0) }
+catch [System.Threading.AbandonedMutexException]
+{
+    # 上一个持有者被强杀/崩溃退出，内核已把所有权直接转给我们。
+    # "杀掉僵死实例再接管"走的正是这条路径，必须算抢到，否则接管永远失败。
+    $gotMutex = $true
+}
+catch { $gotMutex = $false }
+
+if (-not $gotMutex)
+{
+    $hbAge = [double]::MaxValue
+    $hbPid = 0
+    if (Test-Path $HEARTBEAT_FILE)
+    {
+        $hbAge = ((Get-Date) - (Get-Item $HEARTBEAT_FILE).LastWriteTime).TotalMinutes
+        try
+        {
+            $hbTxt = Get-Content $HEARTBEAT_FILE -Raw
+            if ($hbTxt -match '^\s*(\d+)\s*\|') { $hbPid = [int]$Matches[1] }
+        }
+        catch { }
+    }
+    if ($hbAge -lt 3)
+    {
+        Write-Log ("another guardian instance is alive (pid " + $hbPid + ", heartbeat " +
+                   [int]($hbAge * 60) + "s ago) - exiting to avoid double-start.")
+        exit 0
+    }
+    if ($hbPid -gt 0)
+    {
+        # 心跳过期只说明"那个 pid 很久没写心跳了"，不等于"那个 pid 还是 guardian"。
+        # Windows 会回收 PID：隔几天再来看，同一个号很可能已经是 QQ / 浏览器 /
+        # 系统的某个进程。以前这里直接 Stop-Process -Force，等于随机杀进程 ——
+        # 最坏情况正好把正在扫码的 QQ 杀掉。所以先确认它的命令行里确实是 guardian。
+        $isGuardian = $false
+        try
+        {
+            $hbProc = Get-CimInstance Win32_Process -Filter ("ProcessId=" + $hbPid) -ErrorAction Stop
+            if ($hbProc -and $hbProc.CommandLine -like '*guardian.ps1*') { $isGuardian = $true }
+        }
+        catch { }
+        if ($isGuardian)
+        {
+            Write-Log ("stale guardian instance detected (pid " + $hbPid + ", no heartbeat for " +
+                       [int]$hbAge + " min) - terminating it and taking over.")
+            Stop-Process -Id $hbPid -Force -ErrorAction SilentlyContinue
+            Start-Sleep -Seconds 2
+        }
+        else
+        {
+            Write-Log ("heartbeat points at pid " + $hbPid + " but that process is not guardian " +
+                       "(recycled pid?) - not touching it, taking over anyway.")
+        }
+    }
+    else
+    {
+        Write-Log "mutex is held but heartbeat is missing - exiting to be safe."
+        exit 0
+    }
+}
+
 Write-Log "============ Guardian started, monitoring $QQ_UIN ============"
+Write-Heartbeat
 Set-BotState "starting" "看护启动"
 # 注意：AstrBot 不在这里启动。它由用户级 astrbot_watchdog.ps1 负责拉起，
 # 这样 AstrBot 以普通权限运行 —— 它带着"电脑操控"类插件，用管理员权限跑
@@ -654,7 +938,7 @@ Set-BotState "starting" "看护启动"
 # 旧版本用 `Start-Process cmd -WindowStyle Minimized` 起 AstrBot，那个 cmd 窗口
 # 就是开机后残留的"astrbot 终端"，关掉它会连带杀死 AstrBot。这里允许通过
 # 标志文件让看护把自己顺手替换成 pythonw 无窗口实例。
-$abFlag = "D:\napcat\restart-astrbot.flag"
+$abFlag = $AB_FLAG
 if (Test-Path $abFlag)
 {
     Remove-Item $abFlag -Force -ErrorAction SilentlyContinue
@@ -673,16 +957,18 @@ $recoverCount = 0
 $lastRecover  = [DateTime]::MinValue
 $circuitUntil = [DateTime]::MinValue   # 熔断到期时间：此时间前不再自动重启
 $lastQuietLog = [DateTime]::MinValue   # 熔断/夜间提示的限频时间戳
-$nextKeepAlive = (Get-Date).AddSeconds((Get-Random -Min $KEEPALIVE_MIN -Max $KEEPALIVE_MAX))
+$nextKeepAlive = (Get-Date).AddSeconds((Get-NextKeepAliveDelay))
 $script:ForeignSince = [DateTime]::MinValue   # 桌面 QQ 已运行多久（超过上限才强行抢回机器人）
 $script:LastResetAt  = [DateTime]::MinValue   # 上次"连接重置"的时间（发送失败探测限频）
+$script:UnhealthyLogged   = $false            # 本次掉线是否已经记过 unhealthy 日志（限频用）
+$script:LastUnhealthyLog  = [DateTime]::MinValue
 
 while ($true)
 {
-    # ---- 手动强制重启开关：在 D:\napcat 下新建 force-relaunch.flag 即可 ----
+    # ---- 手动强制重启开关：在 $NAPCAT_HOME 下新建 force-relaunch.flag 即可 ----
     # 用途：升级 NapCat、换版本、注入失效时，用"完整重启"（杀 QQ + 重新注入）
     # 而不是 RestartNapCat（只重启 worker，注入的 DLL 还是旧的）。
-    $forceFile = "D:\napcat\force-relaunch.flag"
+    $forceFile = $FORCE_FLAG
     if (Test-Path $forceFile)
     {
         Remove-Item $forceFile -Force -ErrorAction SilentlyContinue
@@ -695,13 +981,26 @@ while ($true)
         $recoverCount = 0
     }
 
-    # ---- Keep-alive timing ----
+    # ---- Keep-alive timing：空闲驱动（只有静了 25 分钟以上才发一条） ----
     if ((Get-Date) -ge $nextKeepAlive)
     {
-        $onlineNow = Get-Online
-        if ($onlineNow) { Send-KeepAlive }
-        # schedule next keep-alive with a random interval
-        $nextKeepAlive = (Get-Date).AddSeconds((Get-Random -Min $KEEPALIVE_MIN -Max $KEEPALIVE_MAX))
+        $nowKA   = Get-Date
+        $idleMin = ($nowKA - (Get-NapCatLastActivity)).TotalMinutes
+        $nightKA = ($nowKA.Hour -ge $KEEPALIVE_NIGHT_FROM -and $nowKA.Hour -lt $KEEPALIVE_NIGHT_TO)
+        if ($nightKA)
+        {
+            $nextKeepAlive = $nowKA.AddMinutes(30)
+        }
+        elseif ($idleMin -lt $KEEPALIVE_IDLE_MIN)
+        {
+            # 刚有真实收发（有人聊天），保活没有意义，10 分钟后再看
+            $nextKeepAlive = $nowKA.AddMinutes(10)
+        }
+        else
+        {
+            if (Get-Online) { Send-KeepAlive }
+            $nextKeepAlive = $nowKA.AddSeconds((Get-NextKeepAliveDelay))
+        }
     }
 
     # ---- Watchdog check ----
@@ -759,12 +1058,21 @@ while ($true)
         $offlineCount = 0
         $recoverCount = 0
         $circuitUntil = [DateTime]::MinValue
+        $script:UnhealthyLogged = $false
     }
     else
     {
         $offlineCount++
         $why = if ($zombie) { "zombie login state: " + $lsNow.err } else { "online=" + $online }
-        Write-Log ("unhealthy detected (" + $offlineCount + "/" + $OFFLINE_LIMIT + "): " + $why)
+        # 掉线期间每 20 秒就走到这里，而熔断可以开 2 小时 = 360 行重复日志。
+        # 改成：每次掉线开头记一行，之后每 5 分钟记一行。
+        $nowU = Get-Date
+        if ((-not $script:UnhealthyLogged) -or (($nowU - $script:LastUnhealthyLog).TotalMinutes -ge 5))
+        {
+            $script:UnhealthyLogged  = $true
+            $script:LastUnhealthyLog = $nowU
+            Write-Log ("unhealthy detected (" + $offlineCount + "/" + $OFFLINE_LIMIT + "): " + $why)
+        }
     }
 
     if ($offlineCount -ge $OFFLINE_LIMIT)
@@ -815,6 +1123,8 @@ while ($true)
                 {
                     Write-Log ("Recovery attempt #" + $recoverCount + " succeeded.")
                     Set-BotState "online" "已登录"
+                    Send-Notification "recovered" "NapCat bot recovered" `
+                        ("机器人 QQ $QQ_UIN 已自动恢复在线（无需扫码）。") "default"
                     $recoverCount = 0
                 }
                 "need_scan"
@@ -843,11 +1153,15 @@ while ($true)
                                " failed - opening " + $CIRCUIT_MINUTES + " min circuit, waiting for manual action.")
                     $circuitUntil = (Get-Date).AddMinutes($CIRCUIT_MINUTES)
                     $lastQuietLog = Get-Date
+                    $nb = "机器人 QQ $QQ_UIN 自动恢复失败，已熔断 $CIRCUIT_MINUTES 分钟，需要人工处理。`n"
+                    if ($QR_PAGE_URL) { $nb += "扫码页: $QR_PAGE_URL" }
+                    Send-Notification "circuit" "NapCat bot circuit opened" $nb "high"
                 }
             }
         }
         $offlineCount = 0
     }
 
+    Write-Heartbeat
     Start-Sleep -Seconds $CHECK_INTERVAL
 }

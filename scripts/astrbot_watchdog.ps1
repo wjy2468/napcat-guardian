@@ -1,17 +1,10 @@
 ﻿# ============================================================
-#  AstrBot 看护脚本（用户级，普通权限运行）
+#  AstrBot 看护脚本
 #   - 每 30s 检查 WebUI 端口 6185 是否在听
 #   - 掉线则用 python main.py 重新拉起（隐藏窗口，输出进 console 日志）
 #   - 启动时若没在跑，也会立刻拉起（兼任开机自启）
-#   - 日志：脚本同目录 astrbot_watchdog.log（>2MB 轮转为 .1）
-#
-#  与 guardian.ps1 的分工：
-#   guardian 只管 NapCat（以最高权限运行）；AstrBot 带电脑操控类插件，
-#   绝不能跑在管理员上下文里，所以由本脚本以普通用户身份看护。
-#
-#  开机自启：把本脚本的快捷方式丢进
-#   %APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup
-#   目标：powershell.exe -NoProfile -WindowStyle Hidden -File "<本文件>"
+#   - 日志：见下方 $LOG_FILE（>2MB 轮转为 .1）
+#   - 停止：astrbot_watchdog.ps1 -Stop
 # ============================================================
 
 param(
@@ -21,16 +14,15 @@ param(
 $ErrorActionPreference = 'Continue'
 
 # ---------------- Configuration ----------------
-# ← 改成你的 AstrBot 根目录（含 main.py 的那一层）
 $ASTRBOT_DIR   = 'C:\path\to\astrbot'
-# ← 改成运行 AstrBot 的 python.exe
 $PYTHON        = "$env:LOCALAPPDATA\Programs\Python\Python314\python.exe"
 $PORT          = 6185
 $CHECK_SECONDS = 30
 $BOOT_WAIT     = 150      # 拉起后最多等这么多秒让端口起来
-$LOG_FILE      = Join-Path $PSScriptRoot 'astrbot_watchdog.log'
+$LOG_FILE      = 'C:\path\to\astrbot_watchdog.log'
 $MUTEX_NAME    = 'Local\astrbot-watchdog'
 $MAX_LOG_BYTES = 2MB
+$KEEP_CONSOLE_LOGS = 10   # $ASTRBOT_DIR 里最多保留几份 astrbot-console-*.log
 
 # ---------------- Logging ----------------
 function Write-Log($msg) {
@@ -43,19 +35,38 @@ function Write-Log($msg) {
     } catch { }
 }
 
-# ---------------- 单实例 ----------------
-$createdNew = $false
-$mutex = New-Object System.Threading.Mutex($true, $MUTEX_NAME, [ref]$createdNew)
-if (-not $createdNew) {
-    if ($Stop) {
-        Write-Log '收到 -Stop，但本实例不是主实例，退出'
+# ---------------- -Stop：直接结束正在跑的那个实例 ----------------
+# 旧写法是"抢到互斥体才停"，可正在跑的时候互斥体恰恰是被它自己占着的：
+# 于是 -Stop 会走进"本实例不是主实例"分支直接退出，一次也停不掉，
+# 想停只能去任务管理器里摸 PID。现在改成按命令行找进程。
+if ($Stop) {
+    $self = $PID
+    # 用正则卡住 "-File ...astrbot_watchdog.ps1" 这个形状，而不是简单 -like 子串匹配：
+    # 否则任何"命令行里提到这个文件名的进程"（编辑器、带 -Command 的一行命令、
+    # 甚至做同样检查的另一个脚本）都会被误杀。
+    $targets = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe' OR Name='pwsh.exe'" -ErrorAction SilentlyContinue |
+        Where-Object {
+            $_.ProcessId -ne $self -and
+            $_.CommandLine -and
+            $_.CommandLine -match '-File\s+"?[^"]*astrbot_watchdog\.ps1' -and
+            $_.CommandLine -notmatch '\s-Stop\b'
+        })
+    if ($targets.Count -eq 0) {
+        Write-Log '-Stop：没有找到正在运行的看护实例（可能已经停了）'
+        exit 0
+    }
+    foreach ($t in $targets) {
+        Write-Log "-Stop：结束看护进程 PID $($t.ProcessId)"
+        Stop-Process -Id $t.ProcessId -Force -ErrorAction SilentlyContinue
     }
     exit 0
 }
 
-if ($Stop) {
-    Write-Log '收到 -Stop，看护退出'
-    $mutex.ReleaseMutex()
+# ---------------- 单实例 ----------------
+$createdNew = $false
+$mutex = New-Object System.Threading.Mutex($true, $MUTEX_NAME, [ref]$createdNew)
+if (-not $createdNew) {
+    Write-Log '已有看护实例在运行（互斥体被占用），本实例退出'
     exit 0
 }
 
@@ -70,6 +81,18 @@ function Get-BotProcesses {
         Where-Object { $_.ExecutablePath -eq $PYTHON -and $_.CommandLine -match 'main\.py' }
 }
 
+# 每次重启都写两个新文件（stdout/stderr），一年下来能把 AstrBot 目录塞满。
+function Remove-OldConsoleLogs {
+    try {
+        $logs = @(Get-ChildItem -Path $ASTRBOT_DIR -Filter 'astrbot-console-*.log' -File -ErrorAction SilentlyContinue |
+                  Sort-Object LastWriteTime -Descending)
+        if ($logs.Count -le $KEEP_CONSOLE_LOGS) { return }
+        foreach ($old in ($logs | Select-Object -Skip $KEEP_CONSOLE_LOGS)) {
+            Remove-Item $old.FullName -Force -ErrorAction SilentlyContinue
+        }
+    } catch { }
+}
+
 function Start-Bot {
     $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
     $outLog = Join-Path $ASTRBOT_DIR "astrbot-console-$stamp.log"
@@ -79,6 +102,7 @@ function Start-Bot {
             -WorkingDirectory $ASTRBOT_DIR -WindowStyle Hidden -PassThru `
             -RedirectStandardOutput $outLog -RedirectStandardError $errLog
         Write-Log "已拉起 AstrBot，PID=$($p.Id)，输出 $outLog"
+        Remove-OldConsoleLogs
         return $p
     } catch {
         Write-Log "拉起失败：$($_.Exception.Message)"
