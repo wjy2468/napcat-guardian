@@ -1,5 +1,5 @@
 {
-  "fileLog": false,
+  "fileLog": true,
   "consoleLog": true,
   "fileLogLevel": "info",
   "consoleLogLevel": "info",

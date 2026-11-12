@@ -37,8 +37,9 @@ Register-ScheduledTask -TaskName "NapCatGuardian" -Action $action `
     -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
 "registered task: NapCatGuardian" | Add-Content $log -Encoding ASCII
 
-# Note: guardian.ps1 itself starts AstrBot and NapCat if they are not
-# running, so no separate launcher task is needed.
+# Note: guardian.ps1 starts NapCat (if not running) but deliberately does
+# NOT start AstrBot - AstrBot holds desktop-control plugins and must run as
+# a normal user. Use scripts\astrbot_watchdog.ps1 plus a Startup shortcut.
 
 # --- Start the guardian now (no need to wait for the next logon) ---
 Start-ScheduledTask -TaskName "NapCatGuardian"
