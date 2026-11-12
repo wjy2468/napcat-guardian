@@ -1,0 +1,13 @@
+{
+  "port": 8430,
+  "qrFile": "D:/napcat/NapCat.Shell/cache/qrcode.png",
+  "providers": [ "ngrok", "cloudflare", "localhost.run", "pinggy" ],
+  "ngrok": {
+    "authToken": "",
+    "domain": ""
+  },
+  "cloudflare": {
+    "namedTunnel": ""
+  },
+  "healthCheckSeconds": 60
+}

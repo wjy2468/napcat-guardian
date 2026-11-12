@@ -11,6 +11,17 @@ config/astrbot/cmd_config.json
 # ===== Local guardian copy with real QQ/token =====
 # If you keep a personalized copy outside scripts/, ignore it.
 scripts/guardian.local.ps1
+guardian.config.json
+
+# ===== qrsync runtime artifacts (secrets / machine-specific) =====
+scripts/qrsync/key.txt
+scripts/qrsync/config.json
+scripts/qrsync/current-url.txt
+scripts/qrsync/login-state.json
+scripts/qrsync/known_hosts
+scripts/qrsync/*.exe
+scripts/qrsync/*.log
+scripts/qrsync/tunnel-*.log*
 
 # ===== Windows / editor =====
 Thumbs.db
