@@ -1,16 +1,29 @@
 ﻿# ============================================================
-#  NapCat Guardian - Keep-alive + Auto-recovery
-#  - Keep-alive: bot sends a message to ITSELF at random intervals
-#    (no one else is disturbed), creating real protocol activity
-#  - Watchdog: detects offline and recovers intelligently:
-#      * NapCat not running at all (e.g. after boot) -> launch it
-#        immediately, do NOT wait.
-#      * Was online, brief network blip -> wait for self-heal.
-#      * Saved session clearly expired -> pop up QR code at once,
-#        do NOT repeatedly kill/restart.
+#  NapCat Guardian v3 - Keep-alive + Staged Auto-recovery
 #
-#  Recommended to run as a Scheduled Task with HIGHEST privileges
-#  (run the installer .bat as administrator once).
+#  What it does
+#    * Keep-alive: the bot messages ITSELF (nobody else is disturbed),
+#      but only when the account has been idle for a while and never
+#      at night. Intervals are heavy-tailed (mostly 20-40 min,
+#      occasionally 1-6 h) so the traffic does not look like a metronome.
+#    * Detect three different failure shapes instead of guessing:
+#        - network-layer stall : NapCat log shows "网络连接异常 /
+#          EventChecker Failed" -> restart the worker only, keep QQ
+#          and the saved session, so usually NO QR scan is needed.
+#        - server-side kick    : "[KickedOffLine] 登录态已失效" ->
+#          quick-login; if the refresh token was revoked too, hand the
+#          QR code to the operator instead of looping restarts.
+#        - zombie session      : isLogin=true but loginError says the
+#          session expired -> restart the worker.
+#    * Safety valves: single recovery attempt, 120-minute circuit
+#      breaker, quiet hours 02:00-07:00, never kill the user's own
+#      desktop QQ, and a global mutex + heartbeat so two instances can
+#      never fight each other.
+#    * Alerts on state changes only (deduplicated): ntfy.sh -> SMTP
+#      e-mail -> WeCom/DingTalk/Feishu/ServerChan/PushPlus -> toast.
+#
+#  Run as a Scheduled Task with HIGHEST privileges
+#  (run scripts/install_guardian.bat as administrator once).
 # ============================================================
 
 # ---------------- Configuration ----------------
@@ -42,6 +55,12 @@ $NOTIFY_NTFY       = $true
 $NOTIFY_TOAST      = $true
 $NOTIFY_NTFY_TOPIC = ""
 $QR_PAGE_URL       = ""
+# 备用通知通道（ntfy.sh 在国内经常超时，必须有不依赖外网的兜底）：
+#   notifyEmail   : { "smtp":"smtp.qq.com", "port":465, "user":"xxx@qq.com",
+#                     "pass":"SMTP授权码", "to":"xxx@qq.com" }
+#   notifyWebhook : { "type":"wecom|dingtalk|feishu|serverchan|pushplus|custom", "url":"..." }
+$NOTIFY_EMAIL      = $null
+$NOTIFY_WEBHOOK    = $null
 $CFG_PATH = Join-Path $NAPCAT_HOME "guardian.config.json"
 if (Test-Path $CFG_PATH)
 {
@@ -53,6 +72,8 @@ if (Test-Path $CFG_PATH)
         if ($gcfg.qrPageUrl) { $QR_PAGE_URL = [string]$gcfg.qrPageUrl }
         if ($null -ne $gcfg.notifyNtfy) { $NOTIFY_NTFY = [bool]$gcfg.notifyNtfy }
         if ($null -ne $gcfg.notifyToast) { $NOTIFY_TOAST = [bool]$gcfg.notifyToast }
+        if ($gcfg.notifyEmail) { $NOTIFY_EMAIL = $gcfg.notifyEmail }
+        if ($gcfg.notifyWebhook) { $NOTIFY_WEBHOOK = $gcfg.notifyWebhook }
     }
     catch { }
 }
@@ -90,9 +111,13 @@ $QUICK_RETRY_SEC  = 90    # 等待期间每隔多少秒补一次 SetQuickLogin
 # 假在线整整 50 分钟）。所以额外盯 NapCat 自己的日志：出现"网络连接异常"
 # 就说明发不出去，立刻走 RestartNapCat（保留 QQ、用缓存 token，免扫码）。
 $NAP_LOG_DIR        = Join-Path $NAPCAT_DIR "logs"
-$SENDFAIL_WINDOW    = 600  # 统计窗口（秒）
-$SENDFAIL_THRESHOLD = 2    # 窗口内累计几次就判定连接已死
-$SENDFAIL_COOLDOWN  = 900  # 两次"连接重置"之间的最小间隔（秒）
+$SENDFAIL_WINDOW    = 300  # 统计窗口（秒）
+# 1 次就够：NapCat 日志里的 "网络连接异常 / EventChecker Failed" 是 QQ 内核
+# 异步报上来的发送失败，不是 API 层的抖动（API 照样返回 retcode 0）。
+# 2026-11-13 09:32 那次只出现了一条，阈值设 2 就永远等不到第二次 → 假在线拖了很久。
+# 为了不误杀，命中后先发一条探针消息复核（Confirm-SendBroken），确认是真死才重启。
+$SENDFAIL_THRESHOLD = 1
+$SENDFAIL_COOLDOWN  = 600  # 两次"连接重置"之间的最小间隔（秒）
 
 # 桌面上手动开的 QQ 和机器人的 QQ 是同一个 exe、同一份用户数据目录，
 # 同时开会互相挤掉。检测到"非 NapCat 拉起的 QQ"时先不重拉机器人，
@@ -186,6 +211,88 @@ function ConvertTo-NtfyHeaderText([string]$s)
     return "=?UTF-8?B?" + $b64 + "?="
 }
 
+# ---------------- 备用通道 1：邮件（国内可达，最稳） ----------------
+function Send-EmailNotification([string]$title, [string]$body)
+{
+    if (-not $NOTIFY_EMAIL) { return $false }
+    try
+    {
+        $cfg = $NOTIFY_EMAIL
+        if (-not $cfg.smtp -or -not $cfg.user -or -not $cfg.pass) { return $false }
+        $to = [string]$cfg.to
+        if (-not $to) { $to = [string]$cfg.user }
+        # 注意：.NET 的 SmtpClient 只支持 STARTTLS（显式 TLS），用 465 会报
+        # "Unable to read data from the transport connection: net_io_connectionclosed"
+        # （2026-11-13 实测）。QQ 邮箱用 587 + EnableSsl 才能发出去。
+        $port = 587
+        if ($cfg.port) { $port = [int]$cfg.port }
+        try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch { }
+        $msg = New-Object System.Net.Mail.MailMessage
+        $msg.From = New-Object System.Net.Mail.MailAddress([string]$cfg.user)
+        foreach ($addr in ($to -split '[;,]')) { if ($addr.Trim()) { $msg.To.Add($addr.Trim()) } }
+        $msg.Subject = $title
+        $msg.SubjectEncoding = [System.Text.Encoding]::UTF8
+        $msg.Body = $body
+        $msg.BodyEncoding = [System.Text.Encoding]::UTF8
+        $msg.IsBodyHtml = $false
+        $client = New-Object System.Net.Mail.SmtpClient([string]$cfg.smtp, $port)
+        $client.EnableSsl = $true
+        $client.Timeout = 20000
+        $client.Credentials = New-Object System.Net.NetworkCredential([string]$cfg.user, [string]$cfg.pass)
+        $client.Send($msg)
+        $client.Dispose(); $msg.Dispose()
+        Write-Log "notify(email) sent: $title"
+        return $true
+    }
+    catch { Write-Log ("notify(email) failed: " + $_.Exception.Message) ; return $false }
+}
+
+# ---------------- 备用通道 2：Webhook（企业微信/钉钉/飞书/Server酱/PushPlus） ----------------
+function Send-WebhookNotification([string]$title, [string]$body)
+{
+    if (-not $NOTIFY_WEBHOOK) { return $false }
+    try
+    {
+        $cfg  = $NOTIFY_WEBHOOK
+        $type = "custom"
+        if ($cfg.type) { $type = ([string]$cfg.type).ToLower() }
+        $url  = [string]$cfg.url
+        if (-not $url) { return $false }
+        $text = "$title`n`n$body"
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($text)
+        $jsonType = "application/json; charset=utf-8"
+        switch ($type)
+        {
+            "wecom"     { $payload = @{ msgtype = "text"; text = @{ content = $text } } | ConvertTo-Json -Depth 5 -Compress }
+            "dingtalk"  { $payload = @{ msgtype = "text"; text = @{ content = $text } } | ConvertTo-Json -Depth 5 -Compress }
+            "feishu"    { $payload = @{ msg_type = "text"; content = @{ text = $text } } | ConvertTo-Json -Depth 5 -Compress }
+            "serverchan"{
+                $u = $url
+                if ($u -notmatch '\?') { $u = $u.TrimEnd('/') + ".send?title=" + [uri]::EscapeDataString($title) + "&desp=" + [uri]::EscapeDataString($body) }
+                Invoke-RestMethod -Uri $u -Method Get -TimeoutSec 15 | Out-Null
+                Write-Log "notify(webhook:serverchan) sent: $title"
+                return $true
+            }
+            "pushplus"  {
+                $payload = @{ token = [string]$cfg.token; title = $title; content = $body; template = "txt" } | ConvertTo-Json -Depth 5 -Compress
+            }
+            default     { $payload = $null }
+        }
+        if ($payload)
+        {
+            Invoke-RestMethod -Uri $url -Method Post -Body ([System.Text.Encoding]::UTF8.GetBytes($payload)) `
+                -ContentType $jsonType -TimeoutSec 15 | Out-Null
+        }
+        else
+        {
+            Invoke-RestMethod -Uri $url -Method Post -Body $bytes -ContentType "text/plain; charset=utf-8" -TimeoutSec 15 | Out-Null
+        }
+        Write-Log ("notify(webhook:" + $type + ") sent: " + $title)
+        return $true
+    }
+    catch { Write-Log ("notify(webhook) failed: " + $_.Exception.Message) ; return $false }
+}
+
 function Send-Notification([string]$key, [string]$title, [string]$body, [string]$priority = "default")
 {
     $now = Get-Date
@@ -220,7 +327,11 @@ function Send-Notification([string]$key, [string]$title, [string]$body, [string]
         }
         catch { Write-Log ("notify(ntfy) failed: " + $_.Exception.Message) }
     }
-    Show-Toast $title $body
+    # ntfy.sh 在国内经常超时（2026-11-13 实测 07:34 推送超时），所以兜底通道必须独立可用：
+    # 邮件（smtp.qq.com:465 可用）/ 企业微信、钉钉、飞书 webhook 均实测可达。
+    $null = Send-EmailNotification $title $body
+    $null = Send-WebhookNotification $title $body
+    if ($NOTIFY_TOAST) { Show-Toast $title $body }
 }
 
 # ---------------- 最近一次真实收发时间（用来判断"空闲"） ----------------
@@ -261,10 +372,17 @@ function Add-KickLog([string]$detail)
 
 
 $script:LastState = ""
+$script:LastStateWrite = [DateTime]::MinValue
 function Set-BotState([string]$state, [string]$note)
 {
-    if ($script:LastState -eq $state) { return }
+    $nowSt = Get-Date
+    # 状态没变化时也要周期性刷新 at 时间戳（5 分钟），否则 qrsync 页面会把一个明明
+    # 在线的机器人显示成「登录状态记录已过期（N 分钟前），可能已掉线」——2026-11-13
+    # 实测就误报了 132 分钟，原因是只在状态变化时写文件。
+    $fresh = (($nowSt - $script:LastStateWrite).TotalSeconds -lt 300)
+    if ($script:LastState -eq $state -and $fresh) { return }
     $script:LastState = $state
+    $script:LastStateWrite = $nowSt
     $obj = [ordered]@{
         state = $state
         note  = $note
@@ -410,6 +528,9 @@ $script:NapLogPath  = $null
 $script:NapLogPos   = 0
 $script:NapLogPrevWrite = $null
 $script:SendFailAts = New-Object System.Collections.ArrayList
+# 单调递增计数：确认探针用它判断"这次探测有没有产生新的失败行"，
+# 比数 ArrayList 长度可靠（窗口裁剪会改变长度）。
+$script:SendFailSeq = 0
 
 function Read-NewNapCatLog
 {
@@ -467,6 +588,7 @@ function Read-NewNapCatLog
         if ($line -match '网络连接异常|EventChecker Failed')
         {
             [void]$script:SendFailAts.Add($now)
+            $script:SendFailSeq++
         }
         if ($line -match 'KickedOffLine|下线通知')
         {
@@ -485,6 +607,30 @@ function Test-SendBroken
     $script:SendFailAts.Clear()
     foreach ($t in $alive) { [void]$script:SendFailAts.Add($t) }
     return ($alive.Count -ge $SENDFAIL_THRESHOLD)
+}
+
+# 命中"发送失败"后先复核：给机器人自己发一条探针消息，若 5 秒内日志里又出现
+# 一条"网络连接异常" → 说明长连接真死了；若没有 → 视为偶发抖动，不动 NapCat。
+function Confirm-SendBroken
+{
+    $seqBefore = $script:SendFailSeq
+    try
+    {
+        $probe = "{0}  link probe" -f (Get-Date -Format "HH:mm")
+        $body  = @{ user_id = $QQ_UIN; message = $probe } | ConvertTo-Json
+        Invoke-RestMethod -Uri "$HTTP_API/send_private_msg" -Method Post `
+            -Body ([System.Text.Encoding]::UTF8.GetBytes($body)) `
+            -ContentType "application/json; charset=utf-8" -TimeoutSec 10 | Out-Null
+    }
+    catch
+    {
+        # API 本身都发不出去，基本可以确定连接已死
+        Write-Log ("  probe failed to dispatch: " + $_.Exception.Message)
+        return $true
+    }
+    Start-Sleep -Seconds 5
+    Read-NewNapCatLog
+    return ($script:SendFailSeq -gt $seqBefore)
 }
 
 # 连接复活：只重启 worker（不杀 QQ、不重新注入），走缓存 token 免扫码
@@ -845,6 +991,16 @@ function Send-KeepAlive
     catch { Write-Log ("keep-alive error: " + $_.Exception.Message) }
 }
 
+# ---------------- 自检：只发一条测试通知然后退出 ----------------
+# 用法：powershell -NoProfile -ExecutionPolicy Bypass -File guardian.ps1 -TestNotify
+if ($args -contains "-TestNotify")
+{
+    $stamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    Send-Notification ("selftest-" + (Get-Date -Format "HHmmss")) "NapCat 通知自检" ("这是 guardian.ps1 的通道自检。`n时间: " + $stamp + "`n收到即表示该通道可用。")
+    Write-Log "selftest notification dispatched"
+    exit 0
+}
+
 # ================= Main =================
 
 # ---- 单实例保护：互斥体 + 心跳 ----
@@ -1027,6 +1183,11 @@ while ($true)
         elseif (($nowReset - $script:LastResetAt).TotalSeconds -lt $SENDFAIL_COOLDOWN)
         {
             # 刚重置过，给缓存 token 一点时间，不重复重启
+        }
+        elseif (-not (Confirm-SendBroken))
+        {
+            Write-Log "send-fail was transient (probe ok) - ignoring"
+            $script:SendFailAts.Clear()
         }
         else
         {

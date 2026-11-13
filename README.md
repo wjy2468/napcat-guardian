@@ -17,6 +17,7 @@
 - [目录结构](#目录结构)
 - [快速开始](#快速开始)
 - [配置说明](#配置说明)
+- [通知与告警](#通知与告警)
 - [关键踩坑记录](#关键踩坑记录)
 - [防风控 / 养号建议](#防风控--养号建议)
 - [常见问题](#常见问题)
@@ -294,8 +295,8 @@ Get-Content D:\napcat\guardian.log -Tail 20       # 应能看到 started / keep-
 | `$LOGIN_WAIT_SEC` | 480 秒 | 全量重启后等缓存 token 登录的上限 |
 | `$WORKER_WAIT_SEC` | 240 秒 | `RestartNapCat` 后等缓存登录的上限 |
 | `$QUICK_RETRY_SEC` | 90 秒 | 等待登录期间补一次 `SetQuickLogin` 的间隔 |
-| `$SENDFAIL_WINDOW` / `$SENDFAIL_THRESHOLD` | 600 秒 / 2 | 发送失败探测：窗口内累计几次"网络连接异常"判定连接已死 |
-| `$SENDFAIL_COOLDOWN` | 900 秒 | 两次"连接重置"的最小间隔 |
+| `$SENDFAIL_WINDOW` / `$SENDFAIL_THRESHOLD` | 300 秒 / 1 | 发送失败探测：窗口内出现"网络连接异常"即判定可疑；随后由 `Confirm-SendBroken` 主动发一条探针复核（5 秒内再报错才算真死），既不误杀也不会漏 |
+| `$SENDFAIL_COOLDOWN` | 600 秒 | 两次"连接重置"的最小间隔 |
 | `$FOREIGN_WAIT_MIN` | 30 分钟 | 检测到桌面 QQ 时，推迟恢复的最长时间 |
 | `$QQ_DATA_DIR` | 你的路径 | QQ 数据目录隔离，留空则不隔离 |
 | `$KA_POOL` | 若干短句 | 保活消息内容，可自行改得更自然 |
@@ -310,6 +311,40 @@ Get-Content D:\napcat\guardian.log -Tail 20       # 应能看到 started / keep-
 | AstrBot WebUI | 6185 | 浏览器管理面板（astrbot_watchdog 用它判断存活） |
 
 > ⚠️ 本地 API 建议只绑定 `127.0.0.1` 且不要对外暴露，也不要使用弱 token。
+
+---
+
+## 通知与告警
+
+守护脚本只在**状态跃迁**时推送（同一事件 30 分钟内去重），不会刷屏；三个触发点：需要扫码（附带扫码页链接）、熔断打开、恢复成功。
+
+| 通道 | 适用 | 说明 |
+|------|------|------|
+| ntfy.sh | 有海外网络时首选 | 手机装 ntfy App 订阅一个随机 topic 即可，零注册。**部分网络下 http/https 都会超时**，所以它排在最前但不是唯一 |
+| 邮件 SMTP | 国内最稳 | QQ 邮箱用 `smtp.qq.com` + **587 + SSL**，密码填「授权码」而不是登录密码。注意 465 在 .NET `SmtpClient` 下会报 `net_io_connectionclosed`（它只支持 STARTTLS） |
+| 企业微信 / 钉钉 / 飞书 / Server酱 / PushPlus | 想推到群里 | 填 webhook URL 即可，脚本按 `type` 自动组装报文 |
+| Windows Toast | 本机在用时 | WinRT `ToastNotificationManager`，家庭版也可用；失败静默 |
+
+敏感配置不写在脚本里，放到 `$NAPCAT_HOME\guardian.config.json`（已被 `.gitignore` 忽略），模板见 `scripts/guardian.config.example.json`：
+
+```json
+{
+  "webuiToken": "YOUR_WEBUI_TOKEN",
+  "qrPageUrl": "https://your-domain.example/?k=YOUR_KEY",
+  "ntfyTopic": "change-me",
+  "notifyNtfy": true,
+  "notifyToast": true,
+  "notifyEmail": { "smtp": "smtp.qq.com", "port": 587, "user": "YOUR_QQ@qq.com",
+                   "pass": "YOUR_SMTP_AUTH_CODE", "to": "YOUR_QQ@qq.com", "ssl": true },
+  "notifyWebhook": { "type": "custom", "url": "" }
+}
+```
+
+自检（不碰 NapCat，只验证通道）：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File D:\napcat\guardian.ps1 -TestNotify
+```
 
 ---
 
@@ -373,6 +408,15 @@ Get-Content D:\napcat\guardian.log -Tail 20       # 应能看到 started / keep-
 
 - **Q：人不在家，机器人要扫码怎么办？**
   A：用 `scripts/qrsync/`。它把二维码变成网页 + 公网隧道，手机随时能扫；页面上还会显示看护写出的 `login-state.json` 状态（需要扫码 / 已上线 / 正在恢复）。
+
+- **Q：ntfy 通知一条都收不到？**
+  A：先 `-TestNotify` 看日志是 `notify(ntfy) sent` 还是 `notify(ntfy) failed: 操作超时`。国内网络下 `ntfy.sh` 的 http/https 都可能整体不可达，此时改用邮件通道（`notifyEmail`），守护脚本会自动按 ntfy → 邮件 → Webhook → Toast 的顺序降级。
+
+- **Q：邮件通道报 `net_io_connectionclosed`？**
+  A：端口用了 465。.NET 的 `SmtpClient` 只支持 STARTTLS，必须用 **587 + SSL**；密码填邮箱的「SMTP 授权码」而不是登录密码。
+
+- **Q：扫码提示「你的 QQ 正请求在一个新的设备登录」是被盗了吗？**
+  A：多数情况不是。手机 QQ 的「切换账号」**不等于退出登录**，小号会话仍留在后台，服务端认为该号同时在线于两端，于是把 PC 侧置为「登录态已失效」。要彻底避免，就在手机的小号界面点「退出登录」，而不是切回大号。
 
 - **Q：AstrBot 没被拉起来？**
   A：检查 `scripts/astrbot_watchdog.ps1` 里的 `$ASTRBOT_DIR`、`$PYTHON`，并确认它是以**普通权限**运行的。

@@ -1,0 +1,20 @@
+﻿{
+  "_comment": "复制到 D:\\napcat\\guardian.config.json（与 guardian.ps1 的 $NAPCAT_HOME 同目录）。该文件已被 .gitignore 忽略，不会进仓库。",
+  "webuiToken": "YOUR_WEBUI_TOKEN",
+  "qrPageUrl": "https://your-domain.example/?k=YOUR_KEY",
+  "ntfyTopic": "change-me-to-a-random-topic",
+  "notifyNtfy": true,
+  "notifyToast": true,
+  "notifyEmail": {
+    "smtp": "smtp.qq.com",
+    "port": 587,
+    "user": "YOUR_QQ@qq.com",
+    "pass": "YOUR_SMTP_AUTH_CODE",
+    "to": "YOUR_QQ@qq.com",
+    "ssl": true
+  },
+  "notifyWebhook": {
+    "type": "custom",
+    "url": ""
+  }
+}
