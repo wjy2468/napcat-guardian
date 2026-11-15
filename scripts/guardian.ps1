@@ -53,6 +53,11 @@ $STATE_FILE = Join-Path $NAPCAT_HOME "qrsync\login-state.json"
 $SESSION_FILE = Join-Path $NAPCAT_HOME "session-since.txt"
 # 可观测性：给 qrsync 网页 / 外部监控读的一页指标（会话时长、今日被踢次数、下次探针时间）
 $METRICS_FILE = Join-Path $NAPCAT_HOME "metrics.json"
+# 公网扫码入口健康：daemon.ps1 每次公网自检写这里，guardian 读到失败就告警
+$TUNNEL_STATE_FILE         = Join-Path $NAPCAT_HOME "qrsync\tunnel-state.json"
+$TUNNEL_ALERT_MIN          = 10
+$TUNNEL_ALERT_COOLDOWN_MIN = 60
+$TUNNEL_ALERT_STAMP        = Join-Path $NAPCAT_HOME "tunnel-alert.last"
 
 # ---------------- 敏感配置：从 guardian.config.json 读取（该文件不进 git） ----------------
 # 文件格式（缺项就用本文件里的默认值）：
@@ -1391,7 +1396,7 @@ function Invoke-DailyReport
         $out = ([string]$outTask.Result).Trim()
         $err = ([string]$errTask.Result).Trim()
         $stamp = "[" + (Get-Date).ToString('yyyy-MM-dd HH:mm:ss') + "] exit=" + $proc.ExitCode +
-                 " stdout=" + $out + " stderr=" + $err + $nl
+                 " stdout=" + $out + " stderr=" + $err + [Environment]::NewLine
         [IO.File]::AppendAllText($REPORT_LOG, $stamp, [Text.UTF8Encoding]::new($false))
         # 只有成功才记"今天已发"；失败留着下轮重试，但由 $REPORT_STAMP_ATTEMPT 限频。
         Set-Content -Path $REPORT_ATTEMPT -Value ((Get-Date).ToString("yyyy-MM-ddTHH:mm:ss")) -NoNewline -Encoding ASCII
@@ -1523,6 +1528,41 @@ if ($SelfTest)
 {
     exit (Invoke-SelfTest)
 }
+
+# ---------------- 公网扫码入口健康 ----------------
+# 扫码页是唯一的远程自救通道：机器人掉线时，用户只能靠它扫码。
+# daemon.ps1 每次公网自检都会写 tunnel-state.json；这里读它，连续不可用超过
+# $TUNNEL_ALERT_MIN 分钟就发告警——否则用户要等到真正需要扫码那一刻才发现页面打不开。
+function Test-TunnelAlert
+{
+    if (-not (Test-Path $TUNNEL_STATE_FILE)) { return $false }
+    try
+    {
+        $st = Get-Content -LiteralPath $TUNNEL_STATE_FILE -Raw -Encoding UTF8 | ConvertFrom-Json
+    }
+    catch { return $false }
+
+    $ok = $true
+    if ($null -ne $st.ok) { $ok = [bool]$st.ok }
+    if ($ok) { return $false }
+
+    $at = [DateTime]::MinValue
+    if ($st.at) { try { $at = [DateTime]::Parse([string]$st.at) } catch { $at = [DateTime]::MinValue } }
+    if ($at -eq [DateTime]::MinValue) { return $false }
+    if (((Get-Date) - $at).TotalMinutes -lt $TUNNEL_ALERT_MIN) { return $false }
+
+    if (Test-Path $TUNNEL_ALERT_STAMP)
+    {
+        try
+        {
+            $last = [DateTime]::Parse((Get-Content -LiteralPath $TUNNEL_ALERT_STAMP -Raw).Trim())
+            if (((Get-Date) - $last).TotalMinutes -lt $TUNNEL_ALERT_COOLDOWN_MIN) { return $false }
+        }
+        catch {}
+    }
+    return $true
+}
+
 # ================= Main =================
 
 # ---- 单实例保护：互斥体 + 心跳 ----
@@ -1913,6 +1953,21 @@ while ($true)
             }
         }
         $offlineCount = 0
+    }
+
+    if (Test-TunnelAlert)
+    {
+        [IO.File]::WriteAllText($TUNNEL_ALERT_STAMP, (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), (New-Object Text.UTF8Encoding($false)))
+        $tb = "扫码页的公网通道自检失败已超过 " + $TUNNEL_ALERT_MIN + " 分钟，手机可能打不开二维码页面。`n"
+        try
+        {
+            $stx = Get-Content -LiteralPath $TUNNEL_STATE_FILE -Raw -Encoding UTF8 | ConvertFrom-Json
+            $tb += "隧道供应商: " + [string]$stx.provider + "`n最后状态时间: " + [string]$stx.at + "`n连续失败: " + [string]$stx.failStreak + " 次`n"
+        }
+        catch {}
+        if ($QR_PAGE_URL) { $tb += "扫码页: " + $QR_PAGE_URL }
+        Write-Log ("tunnel health alert: public QR page failing for more than " + $TUNNEL_ALERT_MIN + " min")
+        Send-Notification "tunnel" "NapCat QR page unreachable" $tb "high"
     }
 
     $script:WasHealthy = $healthy
