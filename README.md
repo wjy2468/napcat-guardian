@@ -347,6 +347,14 @@ PS> .\scripts\experiment-compare.ps1 -Before D:\napcat\baseline.json -After D:\n
 - 其余一律 `no clear change`，此时应当把实验改的那一项改回去，别再叠加变量。
 
 快照是纯 JSON，也可以直接 `Export-Csv` 或喂给别的脚本。
+`metrics.json` 还有两个字段说明"最近一次是怎么被救回来的"：
+
+```json
+{ "lastRecoverSec": 322, "lastRecoverAt": "2026-11-15 13:15:34",
+  "lastCause": "kick", "lastPath": "fast" }
+```
+
+`lastCause` ∈ `kick / zombie / sendfail / webui_down / qr_wait / offline`，`lastPath` ∈ `fast / staged / launch / worker / wait_scan`。日志里对应的成功行也带同样信息：`Recovery attempt #1 succeeded in 322s (cause=kick, path=fast).`
 ### 10. 装完自检：`smoke-test.ps1`
 
 `status.ps1` 回答"现在健不健康"，`smoke-test.ps1` 回答"装得对不对"——部署完、改完配置、换机器之后跑一次，九项一起看：

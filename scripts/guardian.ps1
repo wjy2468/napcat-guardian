@@ -460,6 +460,8 @@ function Write-Metrics([datetime]$nextProbe)
             probeMin    = [int]($KEEPALIVE_MIN / 60)
             lastRecoverSec = $script:LastRecoverSec
             lastRecoverAt  = $script:LastRecoverAt
+            lastCause   = $script:RecoveryCause
+            lastPath    = $script:RecoveryPath
             uin         = $QQ_UIN
         }
         [IO.File]::WriteAllText($METRICS_FILE, ($obj | ConvertTo-Json -Compress),
@@ -821,6 +823,7 @@ function Confirm-SendBroken
 # 连接复活：只重启 worker（不杀 QQ、不重新注入），走缓存 token 免扫码
 function Invoke-ConnectionReset
 {
+    $script:RecoveryCause = "sendfail"; $script:RecoveryPath = "worker"
     Write-Log ("send-fail detected (" + $script:SendFailAts.Count + " in " + [int]($SENDFAIL_WINDOW/60) +
                "min) - restarting worker only, cached token should log in without a scan ...")
     try
@@ -1044,6 +1047,8 @@ function Test-QrModeWaiting([int]$QrAgeSec, $LoginStatus)
 function Do-Recovery
 {
     $webUiUp = Test-WebUI
+    $script:RecoveryCause = ""
+    $script:RecoveryPath = ""
 
     # ---- Case 0: 已经有一张新码在等人扫 ----
     # NapCat 只在"需要扫码"时才生成新码，所以 10 分钟内的码 = 用户正看着的那张。
@@ -1058,6 +1063,7 @@ function Do-Recovery
         # （旧判据用"10 分钟内"，用户离开 12 分钟回来扫码就会失配。）
         if (Test-QrModeWaiting $qrAgeSec $lsq)
         {
+            $script:RecoveryCause = "qr_wait"; $script:RecoveryPath = "wait_scan"
             if ($script:QrModeSince -eq [DateTime]::MinValue) { $script:QrModeSince = Get-Date }
             $qrModeMin = [int]((Get-Date) - $script:QrModeSince).TotalMinutes
             if ($qrModeMin -lt $QR_MODE_MAX_MIN)
@@ -1095,6 +1101,7 @@ function Do-Recovery
         }
         $script:ForeignSince = [DateTime]::MinValue
 
+        $script:RecoveryCause = "webui_down"; $script:RecoveryPath = "launch"
         Write-Log "NapCat not running (WebUI unreachable), launching directly ..."
         $r = Launch-NapCat
         if ($r -eq "online") { Write-Log "  launch succeeded."; return "online" }
@@ -1108,6 +1115,7 @@ function Do-Recovery
     if ($script:KickSeen)
     {
         $script:KickSeen = $false
+        $script:RecoveryCause = "kick"; $script:RecoveryPath = "fast"
         Write-Log "Phase A/B/C skipped: [KickedOffLine] - ticket revoked; only a full relaunch can reuse the cached token."
         Write-Log "Phase D: full relaunch ..."
         $rk = Launch-NapCat
@@ -1121,6 +1129,7 @@ function Do-Recovery
     $ls = Get-LoginStatus
     if ($ls -and $ls.err -match "失效|重新登录|expired|过期")
     {
+        $script:RecoveryCause = "zombie"; $script:RecoveryPath = "worker_restart"
         Write-Log ("login session invalid: " + $ls.err + "  (isLogin=" + $ls.login + ")")
         # 先原地重启 worker：能清掉失效会话并重新生成二维码，
         # 如果缓存 token 还有效，worker 起来就自己登录回去了。
@@ -1147,6 +1156,7 @@ function Do-Recovery
 
     # ---- Case 3: NapCat is up, not logged in, and this was not a kick.
     # Phase A: grace period first (wait for self-heal, do NOT kill).
+        if (-not $script:RecoveryCause) { $script:RecoveryCause = "offline"; $script:RecoveryPath = "staged" }
         Write-Log "Phase A: grace period, waiting for network self-heal (up to 90s) ..."
         for ($i = 0; $i -lt 6; $i++)
         {
@@ -1540,6 +1550,8 @@ $lastQuietLog = [DateTime]::MinValue   # 熔断/夜间提示的限频时间戳
 $nextKeepAlive = (Get-Date).AddSeconds((Get-NextKeepAliveDelay))
 $script:ForeignSince = [DateTime]::MinValue   # 桌面 QQ 已运行多久（超过上限才强行抢回机器人）
 $script:QrModeSince = [DateTime]::MinValue   # 从什么时候开始停在登录页等人扫码
+$script:RecoveryCause = ""                        # 本次恢复的触发原因（kick/zombie/sendfail/webui_down/qr_wait/offline）
+$script:RecoveryPath = ""                         # 本次恢复走的路径（fast/staged/launch/worker/wait_scan）
 $script:LastResetAt  = [DateTime]::MinValue   # 上次"连接重置"的时间（发送失败探测限频）
 $script:KickSeen     = $false                 # 本掉线事件里是否已从日志确认 [KickedOffLine]
 $script:WasHealthy   = $null                  # 上一轮的健康状态（$null = 本进程还没判断过）（用于检测 false->true 跃迁，重置会话起点）
@@ -1774,7 +1786,7 @@ while ($true)
                     $tookSec = [int]((Get-Date) - $lastRecover).TotalSeconds
                     $script:LastRecoverSec = $tookSec
                     $script:LastRecoverAt = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
-                    Write-Log ("Recovery attempt #" + $recoverCount + " succeeded in " + $tookSec + "s.")
+                    Write-Log ("Recovery attempt #" + $recoverCount + " succeeded in " + $tookSec + "s (cause=" + $script:RecoveryCause + ", path=" + $script:RecoveryPath + ").")
                     Set-BotState "online" "已登录"
                     Send-Notification "recovered" "NapCat bot recovered" `
                         ("机器人 QQ $QQ_UIN 已自动恢复在线（无需扫码）。`n耗时: " + $tookSec + " 秒`n会话时长: " + (Get-SessionMinutes) + " 分钟") "default"
