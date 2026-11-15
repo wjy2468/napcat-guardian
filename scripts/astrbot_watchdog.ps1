@@ -3,7 +3,7 @@
 #   - 每 30s 检查 WebUI 端口 6185 是否在听
 #   - 掉线则用 python main.py 重新拉起（隐藏窗口，输出进 console 日志）
 #   - 启动时若没在跑，也会立刻拉起（兼任开机自启）
-#   - 日志：脚本同目录的 astrbot_watchdog.log（>2MB 轮转为 .1）
+#   - 日志：D:\napcat\astrbot_watchdog.log（>2MB 轮转为 .1）
 #   - 停止：astrbot_watchdog.ps1 -Stop
 # ============================================================
 
@@ -23,6 +23,11 @@ $LOG_FILE      = Join-Path $PSScriptRoot 'astrbot_watchdog.log'
 $MUTEX_NAME    = 'Local\astrbot-watchdog'
 $MAX_LOG_BYTES = 2MB
 $KEEP_CONSOLE_LOGS = 10   # $ASTRBOT_DIR 里最多保留几份 astrbot-console-*.log
+# 一页状态：给 qrsync 网页 / 外部监控读（AstrBot 死掉时 NapCat 完全不知情，
+# 所以这块状态必须由看护自己写出来，否则用户只能靠"机器人不理人"才发现）。
+$STATE_FILE    = Join-Path $PSScriptRoot 'astrbot-state.json'
+$script:BotSince  = $null
+$script:Restarts  = 0
 
 # ---------------- Logging ----------------
 function Write-Log($msg) {
@@ -35,6 +40,26 @@ function Write-Log($msg) {
     } catch { }
 }
 
+# ---------------- 状态文件 ----------------
+function Write-BotState([string]$state, [string]$note = '') {
+    try {
+        $proc = Get-BotProcesses | Sort-Object CreationDate | Select-Object -First 1
+        if ($proc -and (-not $script:BotSince -or $script:BotSince -lt $proc.CreationDate)) {
+            $script:BotSince = $proc.CreationDate
+        }
+        $obj = [ordered]@{
+            at       = (Get-Date -Format 'yyyy-MM-ddTHH:mm:sszzz')
+            state    = $state
+            note     = $note
+            pid      = if ($proc) { [int]$proc.ProcessId } else { 0 }
+            portOk   = [bool](Test-Port)
+            restarts = $script:Restarts
+            since    = if ($script:BotSince) { $script:BotSince.ToString('yyyy-MM-ddTHH:mm:sszzz') } else { '' }
+        }
+        [IO.File]::WriteAllText($STATE_FILE, ($obj | ConvertTo-Json -Compress),
+            (New-Object System.Text.UTF8Encoding($false)))
+    } catch { }
+}
 # ---------------- -Stop：直接结束正在跑的那个实例 ----------------
 # 旧写法是"抢到互斥体才停"，可正在跑的时候互斥体恰恰是被它自己占着的：
 # 于是 -Stop 会走进"本实例不是主实例"分支直接退出，一次也停不掉，
@@ -142,6 +167,8 @@ if (-not (Test-Port)) {
 } else {
     Write-Log "AstrBot 已在运行，端口 $PORT 正常"
 }
+$initState = if (Test-Port) { 'online' } else { 'starting' }
+Write-BotState $initState 'watchdog started'
 
 $lastHeartbeat = Get-Date
 $failStreak = 0
@@ -151,12 +178,18 @@ while ($true) {
 
     # 心跳（每 10 分钟一条，避免日志无限增长）
     if (((Get-Date) - $lastHeartbeat).TotalMinutes -ge 10) {
-        Write-Log "心跳：端口 $PORT $(if (Test-Port) { '正常' } else { '无监听' })"
+        $portNow = Test-Port
+        Write-Log "心跳：端口 $PORT $(if ($portNow) { '正常' } else { '无监听' })"
+        $hbState = if ($portNow) { 'online' } else { 'down' }
+        Write-BotState $hbState 'heartbeat'
         $lastHeartbeat = Get-Date
     }
 
     if (Test-Port) {
         $failStreak = 0
+        # 每轮都刷新状态文件：网页用「多久以前的状态」判断是否新鲜，
+        # 只靠 10 分钟一次的心跳会让它误报「AstrBot 异常」。
+        Write-BotState 'online' 'ok'
         continue
     }
 
@@ -225,8 +258,11 @@ while ($true) {
     [void](Start-Bot)
     if (Wait-Up $BOOT_WAIT) {
         Write-Log '恢复成功'
+        $script:Restarts++
+        Write-BotState 'online' 'restarted by watchdog'
         $failStreak = 0
     } else {
         Write-Log '恢复失败（端口未起来），下轮重试'
+        Write-BotState 'failed' 'restart did not bring the port up'
     }
 }

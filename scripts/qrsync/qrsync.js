@@ -86,6 +86,18 @@ function botState() {
   } catch { return null; }
 }
 
+// AstrBot 看护每 30 秒写一次的状态（两套服务互相独立，谁挂了都要能看见）
+const ASTRBOT_STATE = path.join(__dirname, '..', 'astrbot-state.json');
+function astrbot() {
+  try { return JSON.parse(fs.readFileSync(ASTRBOT_STATE, 'utf8')); } catch { return null; }
+}
+
+// guardian 每 20 秒写一次的一页指标（会话时长 / 今日被踢次数 / 下次探针）
+const METRICS_FILE = path.join(__dirname, '..', 'metrics.json');
+function metrics() {
+  try { return JSON.parse(fs.readFileSync(METRICS_FILE, 'utf8')); } catch { return null; }
+}
+
 function snapshot() {
   let st = null;
   try { st = fs.statSync(QR_FILE); } catch { st = null; }
@@ -157,6 +169,7 @@ function page() {
   <div class="frame" id="f"><img id="q" alt="QQ 登录二维码"></div>
   <div class="status"><span class="dot" id="d"></span><span id="t">连接中…</span></div>
   <div class="hint" id="h">用手机 QQ 扫码即可登录电脑上的 NapCat 机器人</div>
+  <div class="hint" id="m" style="font-size:12px;opacity:.75"></div>
   <button onclick="fetch('close?k='+K).then(()=>document.body.innerHTML='<p style=color:#8b93a7>已关闭同步</p>')">结束并关闭</button>
 </div>
 <script>
@@ -198,6 +211,20 @@ async function tick(){
       bd.textContent='机器人已登录，在线运行中';
       bd.className='banner ok'; bd.style.display='';
     } else { bd.style.display='none'; }
+    const mt=s.metrics, ml=$('m');
+    if(mt){
+      const parts=[];
+      if(mt.sessionMin>=0) parts.push('本次登录 '+mt.sessionMin+' 分钟');
+      parts.push('今日被踢 '+mt.kicksToday+' 次');
+      if(mt.nextProbeAt) parts.push('下次探针 '+mt.nextProbeAt);
+      const ab=s.astrbot;
+      if(ab){
+        const ageMin=Math.round((Date.now()-Date.parse(ab.at))/60000);
+        const ok=ab.state==='online'&&ab.portOk&&ageMin<=5;
+        parts.push('AstrBot '+(ok?'正常':'异常('+ab.state+', '+ageMin+' 分钟前)'));
+      }
+      ml.textContent=parts.join(' · ');
+    } else { ml.textContent=''; }
     if(s.mtime && s.mtime!==last){ last=s.mtime; $('q').src='qrcode.png?k='+K+'&t='+s.mtime; }
   }catch(e){ $('t').textContent='连接中断，重试中…'; $('d').className='dot'; }
 }
@@ -221,6 +248,8 @@ function handle(req, res) {
   if (u.pathname === '/status') {
     const s = snapshot();
     s.bot = botState();
+    s.metrics = metrics();
+    s.astrbot = astrbot();
     return res.writeHead(200, { ...noStore, 'content-type': 'application/json' }).end(JSON.stringify(s));
   }
   if (u.pathname === '/close') {

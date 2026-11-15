@@ -156,6 +156,15 @@
 
 配合 `qrsync` 的扫码页，页脚会显示"本次登录 N 分钟 · 今日被踢 M 次 · 下次探针 HH:MM"。
 
+另外，`astrbot_watchdog.ps1` 每 30 秒写一次 `astrbot-state.json`：
+
+```json
+{"at":"2026-11-15T13:22:42+08:00","state":"online","note":"ok","pid":22512,
+ "portOk":true,"restarts":0,"since":"2026-11-15T10:57:08+08:00"}
+```
+
+原因是两套服务互相看不见：NapCat 掉线时 AstrBot 往往还活着，而 AstrBot 的 HTTP 层死掉时（11-13 19:59 那次 proactor `WinError 64`）NapCat 也完全不知情。现在扫码页会把 AstrBot 一起显示成 `AstrBot 正常` 或 `AstrBot 异常(state, N 分钟前)`，超过 5 分钟没更新就判异常。
+
 ---
 
 ### 6. 诊断：这次为什么被踢？
