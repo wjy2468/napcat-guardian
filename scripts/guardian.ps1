@@ -1033,6 +1033,8 @@ function Launch-NapCat
 # Returns $true if back online, $false if a manual QR scan is required.
 function Do-Recovery
 {
+    $webUiUp = Test-WebUI
+
     # ---- Case 0: 已经有一张新码在等人扫 ----
     # NapCat 只在"需要扫码"时才生成新码，所以 10 分钟内的码 = 用户正看着的那张。
     # 这时再走恢复流程（重启 worker / 全量重启）只会把码冲掉、让用户白扫一次。
@@ -1050,7 +1052,7 @@ function Do-Recovery
     # ---- Case 1: WebUI unreachable -> NapCat is NOT running at all
     # (typical right after boot / after a crash). Launch it immediately;
     # waiting through the grace period here would waste minutes.
-    if (-not (Test-WebUI))
+    if (-not $webUiUp)
     {
         # 桌面 QQ 正开着：同一个 exe、同一份用户数据目录，此时拉机器人必然互踢。
         # 先让用户的 QQ 用着，关掉后自动恢复；超过上限才强行抢回。
@@ -1079,6 +1081,19 @@ function Do-Recovery
         return "failed"
     }
 
+    # ---- 被踢（[KickedOffLine]）：必须排在"僵尸态"判断之前
+    # 踢线时 loginError 同样含"失效"，若先走 Case 2，就会先白做一次 worker 重启
+    # （2026-11-15 实测：RestartNapCat 不复用票据，仍停在二维码上，只能再全量重启）。
+    if ($script:KickSeen)
+    {
+        $script:KickSeen = $false
+        Write-Log "Phase A/B/C skipped: [KickedOffLine] - ticket revoked; only a full relaunch can reuse the cached token."
+        Write-Log "Phase D: full relaunch ..."
+        $rk = Launch-NapCat
+        if ($rk -eq "online") { Write-Log "  full relaunch succeeded."; return "online" }
+        if ($rk -eq "need_scan") { Write-Log "  session expired after relaunch."; Notify-Admin; return "need_scan" }
+        return "failed"
+    }
     # ---- Case 2: WebUI is up (NapCat started) but the bot is not really usable.
     # 关键场景：isLogin=true 但 loginError 非空 = 登录态已失效的"僵尸态"，
     # 它仍然自报 online=true，所以只看 Get-Online 永远发现不了。
@@ -1109,25 +1124,8 @@ function Do-Recovery
         return "need_scan"
     }
 
-    # ---- Case 3: NapCat is up, probably a brief network blip or a kick.
+    # ---- Case 3: NapCat is up, not logged in, and this was not a kick.
     # Phase A: grace period first (wait for self-heal, do NOT kill).
-    if ($script:KickSeen)
-    {
-        # [KickedOffLine] = 腾讯吊销了这张票，不是网络抖动。
-        # 2026-11-15 实测（13:03 那次主动续期）：worker 重启（RestartNapCat）
-        # 之后票据不会被复用，isLogin=False、无 loginError —— 也就是停在二维码上；
-        # 而完整重启（杀 QQ -> launcher，Phase D）在 07:33 和 12:52 两次都用
-        # 缓存票直接登回来了。所以被踢时 A/B/C 三层全是白等：直接走 Phase D。
-        $script:KickSeen = $false
-        Write-Log "Phase A/B/C skipped: [KickedOffLine] - ticket revoked; only a full relaunch can reuse the cached token."
-        Write-Log "Phase D: full relaunch ..."
-        $rk = Launch-NapCat
-        if ($rk -eq "online") { Write-Log "  full relaunch succeeded."; return "online" }
-        if ($rk -eq "need_scan") { Write-Log "  session expired after relaunch."; Notify-Admin; return "need_scan" }
-        return "failed"
-    }
-    else
-    {
         Write-Log "Phase A: grace period, waiting for network self-heal (up to 90s) ..."
         for ($i = 0; $i -lt 6; $i++)
         {
@@ -1136,7 +1134,6 @@ function Do-Recovery
             $o = Get-Online
             if ($o) { Write-Log "  self-healed during grace period."; return "online" }
         }
-    }
 
     # Phase B: in-process quick login (lightweight, no restart).
     Write-Log "Phase B: in-process quick login (2 tries) ..."
@@ -1369,7 +1366,18 @@ function Invoke-SelfTest
         $ts = $script:NapLastLineTs
         Write-Host ("[5] last line timestamp         " + $(if ($ts) { $ts.ToString('MM-dd HH:mm:ss') } else { '<null>' }))
         if (-not $ts) { Write-Host '    FAIL: timestamp not parsed'; $fail++ }
-    }
+
+        # [6] 回归守卫：被踢快速通道必须排在"僵尸态"判断之前。
+        # 踢线时 loginError 里也含"失效"，若被 Case 2 抢先，快速通道就变成死代码。
+        $src = [IO.File]::ReadAllText($PSCommandPath, [Text.UTF8Encoding]::new($true))
+        $kickIdx = $src.IndexOf('if ($script:KickSeen)')
+        $zombieIdx = $src.IndexOf('# ---- Case 2:')
+        Write-Host ("[6] kick before zombie          kick=" + $kickIdx + " zombie=" + $zombieIdx)
+        if ($kickIdx -lt 0 -or $zombieIdx -lt 0 -or $kickIdx -gt $zombieIdx)
+        {
+            Write-Host '    FAIL: kick fast-path sits after the zombie branch'
+            $fail++
+        }    }
     finally
     {
         $script:NAP_LOG_DIR  = $savedDir
@@ -1377,7 +1385,7 @@ function Invoke-SelfTest
         Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
     }
 
-    if ($fail -eq 0) { Write-Host 'SELFTEST PASSED (5 checks)' }
+    if ($fail -eq 0) { Write-Host 'SELFTEST PASSED (6 checks)' }
     else { Write-Host ("SELFTEST FAILED (" + $fail + " problem(s))") }
     return $fail
 }
