@@ -602,7 +602,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File D:\napcat\guardian.ps1 -Test
 .\scripts\recovery-sim.ps1 -Guardian D:\napcat\guardian.ps1
 ```
 
-六个断言（5 个场景）：
+八个断言（7 个场景）：
 
 | 场景 | 期望 |
 |---|---|
@@ -611,6 +611,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File D:\napcat\guardian.ps1 -Test
 | 僵尸态（无被踢行） | 日志有 `login session invalid`，走 worker 重启 |
 | WebUI 不可达 | 日志有 `launching directly` |
 | 被踢后票据真的废了 | 返回 `need_scan` |
+| 假在线（1006514） | 只 RestartNapCat（日志 send-fail detected），不杀 QQ |
+| 桌面 QQ 正在用 | 返回 deferred，日志 deferring relaunch，**不**拉起机器人 |
 
 **它自己是验过的**：把快速通道改成不可达、把"码在刷新"判据改成恒假，模拟测试分别报 2 项 / 1 项 FAIL——也就是说这两个历史 bug 现在会被直接抓住。
 

@@ -154,9 +154,29 @@ $r5 = Do-Recovery
 $joined5 = $script:SimLog -join ' | '
 if ($VerboseLog) { Write-Host $joined5 }
 Check 'kick + expired ticket → need_scan' ($r5 -eq 'need_scan') ("result=$r5")
+# ---- 场景 6：假在线（1006514）→ 只重启 worker，不杀 QQ ----
+New-Scenario
+$script:Stub.Login = @{ login = $true; err = ''; qr = '' }
+$script:Stub.WaitLogin = $true
+$script:SendFailAts.Add((Get-Date))
+$r6 = Invoke-ConnectionReset
+$joined6 = $script:SimLog -join ' | '
+if ($VerboseLog) { Write-Host $joined6 }
+Check 'sendfail → worker restart only' (($r6 -eq $true) -and ($joined6 -match 'send-fail detected') -and ($joined6 -match 'Wait-Login')) ("result=$r6")
+
+# ---- 场景 7：桌面 QQ 开着 → 先让路（deferred），不抢机器人 ----
+New-Scenario
+$script:Stub.WebUI = $false
+$script:ForeignSince = Get-Date
+function Test-ForeignQq { return @(4242) }
+$r7 = Do-Recovery
+$joined7 = $script:SimLog -join ' | '
+if ($VerboseLog) { Write-Host $joined7 }
+Check 'desktop QQ running → deferred' (($r7 -eq 'deferred') -and ($joined7 -match 'deferring relaunch') -and -not ($joined7 -match 'Launch-NapCat')) ("result=$r7")
+function Test-ForeignQq { return $null }
 
 Write-Host ''
-if ($fail -eq 0) { Write-Host 'RECOVERY-SIM PASSED (5 scenarios)'; $code = 0 }
+if ($fail -eq 0) { Write-Host 'RECOVERY-SIM PASSED (7 scenarios)'; $code = 0 }
 else { Write-Host ('RECOVERY-SIM FAILED (' + $fail + ' problem(s))'); $code = 1 }
 
 Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
