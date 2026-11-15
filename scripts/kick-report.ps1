@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Summarise every real [KickedOffLine] event from NapCat logs.
 
@@ -23,6 +23,10 @@
 .PARAMETER Days
     Only show kicks from the last N days (0 = all).
 
+.PARAMETER GuardianLog
+    guardian.log, used to measure how long the recovery actually took
+    (kick -> recovery start -> logged in again).
+
 .EXAMPLE
     .\kick-report.ps1
     .\kick-report.ps1 -Days 3
@@ -31,6 +35,7 @@
 param(
     [string]$LogDir = 'D:\napcat\NapCat.Shell\logs',
     [string]$KickLog = 'D:\napcat\kick.log',
+    [string]$GuardianLog = 'D:\napcat\guardian.log',
     [int]$Days = 0
 )
 
@@ -63,6 +68,21 @@ if (Test-Path $KickLog) {
 }
 
 $rows = New-Object System.Collections.ArrayList
+
+# guardian.log gives us the other half of the story: how long the recovery took.
+# Written format: [yyyy-MM-dd HH:mm:ss] message
+$gEvents = New-Object System.Collections.ArrayList
+if (Test-Path -LiteralPath $GuardianLog) {
+    foreach ($ln in (Get-Content -LiteralPath $GuardianLog -ErrorAction SilentlyContinue)) {
+        if ($ln -match '^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]\s+(.*)$') {
+            $at = $null
+            try { $at = [datetime]::ParseExact($Matches[1], 'yyyy-MM-dd HH:mm:ss', $null) } catch { }
+            if ($null -ne $at) {
+                [void]$gEvents.Add([pscustomobject]@{ At = $at; Text = $Matches[2] })
+            }
+        }
+    }
+}
 
 foreach ($f in (Get-ChildItem -LiteralPath $LogDir -Filter '*.log' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime)) {
     $first = $null
@@ -97,12 +117,33 @@ foreach ($f in (Get-ChildItem -LiteralPath $LogDir -Filter '*.log' -File -ErrorA
     $key = $kick.ToString('MM-dd HH:mm:ss')
     $ip = if ($ipByTime.ContainsKey($key)) { $ipByTime[$key] } else { '' }
 
+    # --- recovery timing (needs guardian.log) ---
+    $detectSec = $null
+    $recoverSec = $null
+    $path = ''
+    if ($gEvents.Count -gt 0) {
+        $from = $kick.AddMinutes(-1)
+        $to = $kick.AddMinutes(40)
+        $win = @($gEvents | Where-Object { $_.At -ge $from -and $_.At -le $to })
+        $rec = $win | Where-Object { $_.Text -match 'Recovery attempt #' } | Select-Object -First 1
+        $skip = $win | Where-Object { $_.Text -match 'Phase A/B/C skipped|Phase A/B/C/D skipped' } | Select-Object -First 1
+        $back = $win | Where-Object { $_.Text -match 'logged in\.|QR scanned - bot is back online' } | Select-Object -First 1
+        if ($null -ne $skip) { $path = 'fast' }
+        elseif ($win | Where-Object { $_.Text -match 'Phase A:' }) { $path = 'staged' }
+        if ($null -ne $rec) { $detectSec = [int]($rec.At - $kick).TotalSeconds }
+        if ($null -ne $back) { $recoverSec = [int]($back.At - $kick).TotalSeconds }
+    }
+
     [void]$rows.Add([pscustomobject]@{
-        Kicked  = $key
-        Log     = $f.Name
-        Session = $sessMin
-        Uptime  = ('{0:hh\:mm}' -f ($kick - $first))
-        Ip      = $ip
+        Kicked     = $key
+        Log        = $f.Name
+        Session    = $sessMin
+        Uptime     = ('{0:hh\:mm}' -f ($kick - $first))
+        KickAt     = $kick
+        DetectSec  = $detectSec
+        RecoverSec = $recoverSec
+        Path       = $path
+        Ip         = $ip
     })
 }
 
@@ -112,12 +153,6 @@ if ($rows.Count -eq 0) {
 }
 
 Write-Host ''
-Write-Host ('Kicked sessions: {0}' -f $rows.Count) -ForegroundColor Cyan
-$rows | Sort-Object Kicked | Format-Table -AutoSize
-
-$sessions = $rows | ForEach-Object { $_.Session } | Sort-Object
-$count = $sessions.Count
-
 function Get-Median([double[]]$v) {
     if ($v.Count -eq 0) { return 0 }
     $s = $v | Sort-Object
@@ -125,6 +160,30 @@ function Get-Median([double[]]$v) {
     if ($s.Count % 2 -eq 1) { return $s[$mid] }
     return [Math]::Round(($s[$mid - 1] + $s[$mid]) / 2, 1)
 }
+
+
+Write-Host ('Kicked sessions: {0}' -f $rows.Count) -ForegroundColor Cyan
+$rows | Sort-Object Kicked |
+    Select-Object Kicked, Log, Session, Uptime, DetectSec, RecoverSec, Path, Ip |
+    Format-Table -AutoSize
+
+# Recovery latency: this is the number that says whether the fast path works.
+$rec = @($rows | Where-Object { $null -ne $_.RecoverSec } | ForEach-Object { [double]$_.RecoverSec })
+if ($rec.Count -gt 0) {
+    $recSorted = $rec | Sort-Object
+    Write-Host ''
+    Write-Host ('Recovery latency (kick -> online), {0} of {1} kicks matched in guardian.log' -f $rec.Count, $rows.Count) -ForegroundColor Cyan
+    Write-Host ('  min {0}s  median {1}s  max {2}s' -f $recSorted[0], (Get-Median $recSorted), $recSorted[-1])
+    foreach ($p in ($rows | Group-Object Path | Where-Object { $_.Name })) {
+        $vals = @($p.Group | Where-Object { $null -ne $_.RecoverSec } | ForEach-Object { [double]$_.RecoverSec } | Sort-Object)
+        if ($vals.Count -gt 0) {
+            Write-Host ('  path={0}: {1} kick(s), median {2}s' -f $p.Name, $vals.Count, (Get-Median $vals))
+        }
+    }
+}
+
+$sessions = $rows | ForEach-Object { $_.Session } | Sort-Object
+$count = $sessions.Count
 
 $median = Get-Median $sessions
 $p90 = if ($count -ge 10) { $sessions[[int][Math]::Floor($count * 0.9)] } else { $sessions[-1] }
