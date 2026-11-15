@@ -61,6 +61,13 @@ $METRICS_FILE = Join-Path $NAPCAT_HOME "metrics.json"
 $NOTIFY_NTFY       = $true
 $NOTIFY_TOAST      = $true
 $NOTIFY_NTFY_TOPIC = ""
+# ntfy.sh 在国内大概率超时（本机实测每次都 15 秒后才抛错），而它排在邮件之前：
+# 每发一条告警都要先白等 15 秒，邮件才发得出去。所以给它加"熔断"：
+# 连续失败 3 次就在 6 小时内直接跳过，告警延迟回到秒级。
+$NTFY_TIMEOUT_SEC    = 6
+$NTFY_FAIL_MAX       = 3
+$NTFY_COOLDOWN_H     = 6
+$NTFY_DOWN_FILE      = "D:\napcat\ntfy-down.until"
 $QR_PAGE_URL       = ""
 # 备用通知通道（ntfy.sh 在国内经常超时，必须有不依赖外网的兜底）：
 #   notifyEmail   : { "smtp":"smtp.qq.com", "port":465, "user":"xxx@qq.com",
@@ -335,6 +342,44 @@ function Send-WebhookNotification([string]$title, [string]$body)
     catch { Write-Log ("notify(webhook) failed: " + $_.Exception.Message) ; return $false }
 }
 
+# ---------------- ntfy 熔断 ----------------
+function Test-NtfySuppressed([string]$Path = "")
+{
+    if (-not $Path) { $Path = $NTFY_DOWN_FILE }
+    try
+    {
+        if (-not (Test-Path $Path)) { return $false }
+        $raw = (Get-Content -LiteralPath $Path -Raw -ErrorAction Stop).Trim()
+        $until = [datetime]::ParseExact($raw, 'yyyy-MM-ddTHH:mm:ss', [Globalization.CultureInfo]::InvariantCulture)
+        return ((Get-Date) -lt $until)
+    }
+    catch { return $false }
+}
+
+function Register-NtfyFailure([string]$Path = "")
+{
+    if (-not $Path) { $Path = $NTFY_DOWN_FILE }
+    $script:NtfyFails++
+    if ($script:NtfyFails -ge $NTFY_FAIL_MAX)
+    {
+        $until = (Get-Date).AddHours($NTFY_COOLDOWN_H)
+        try
+        {
+            [IO.File]::WriteAllText($Path, $until.ToString('yyyy-MM-ddTHH:mm:ss'),
+                (New-Object System.Text.UTF8Encoding($false)))
+            Write-Log ("ntfy disabled until " + $until.ToString('HH:mm') + " (" + $script:NtfyFails + " consecutive failures)")
+        }
+        catch { }
+    }
+}
+
+function Clear-NtfyFailure([string]$Path = "")
+{
+    if (-not $Path) { $Path = $NTFY_DOWN_FILE }
+    $script:NtfyFails = 0
+    if (Test-Path $Path) { Remove-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue }
+}
+
 function Send-Notification([string]$key, [string]$title, [string]$body, [string]$priority = "default")
 {
     $now = Get-Date
@@ -346,7 +391,11 @@ function Send-Notification([string]$key, [string]$title, [string]$body, [string]
     }
     $script:NotifyLast[$key] = $now
 
-    if ($NOTIFY_NTFY -and $NOTIFY_NTFY_TOPIC)
+    if ($NOTIFY_NTFY -and $NOTIFY_NTFY_TOPIC -and (Test-NtfySuppressed))
+    {
+        Write-Log "notify(ntfy) skipped: circuit open (ntfy has been failing)"
+    }
+    elseif ($NOTIFY_NTFY -and $NOTIFY_NTFY_TOPIC)
     {
         try
         {
@@ -363,11 +412,16 @@ function Send-Notification([string]$key, [string]$title, [string]$body, [string]
                 Tags     = "robot"
             }
             Invoke-RestMethod -Uri ("https://ntfy.sh/" + $NOTIFY_NTFY_TOPIC) -Method Post `
-                -Body $bytes -ContentType "text/plain; charset=utf-8" -TimeoutSec 15 `
+                -Body $bytes -ContentType "text/plain; charset=utf-8" -TimeoutSec $NTFY_TIMEOUT_SEC `
                 -Headers $header | Out-Null
             Write-Log ("notify(ntfy) sent: " + $title)
+            Clear-NtfyFailure
         }
-        catch { Write-Log ("notify(ntfy) failed: " + $_.Exception.Message) }
+        catch
+        {
+            Write-Log ("notify(ntfy) failed: " + $_.Exception.Message)
+            Register-NtfyFailure
+        }
     }
     # ntfy.sh 在国内经常超时（2026-11-13 实测 07:34 推送超时），所以兜底通道必须独立可用：
     # 邮件（smtp.qq.com:465 可用）/ 企业微信、钉钉、飞书 webhook 均实测可达。
@@ -657,6 +711,7 @@ $script:NapLogPos   = 0
 $script:NapLogPrevWrite = $null
 $script:NapLastLineTs = $null   # 最后一行日志自带的时间戳（算"被踢前安静多久"用）
 $script:SendFailAts = New-Object System.Collections.ArrayList
+$script:NtfyFails   = 0
 # 单调递增计数：确认探针用它判断"这次探测有没有产生新的失败行"，
 # 比数 ArrayList 长度可靠（窗口裁剪会改变长度）。
 $script:SendFailSeq = 0
@@ -1436,6 +1491,22 @@ function Invoke-SelfTest
             Write-Host '    FAIL: KickSeen is cleared before Launch-NapCat (early notice would never fire)'
             $fail++
         }
+        # [9] ntfy 熔断：连续失败到阈值后应跳过，成功后应清掉
+        $ntfyTest = Join-Path $env:TEMP ("ntfy-down-" + [guid]::NewGuid().ToString('N') + ".txt")
+        $script:NtfyFails = 0
+        $sup0 = Test-NtfySuppressed $ntfyTest
+        for ($i = 0; $i -lt $NTFY_FAIL_MAX; $i++) { Register-NtfyFailure $ntfyTest }
+        $sup1 = Test-NtfySuppressed $ntfyTest
+        Clear-NtfyFailure $ntfyTest
+        $sup2 = Test-NtfySuppressed $ntfyTest
+        Remove-Item -LiteralPath $ntfyTest -Force -ErrorAction SilentlyContinue
+        Write-Host ("[9] ntfy circuit                open0=" + $sup0 + " open_after_" + $NTFY_FAIL_MAX + "=" + $sup1 + " cleared=" + $sup2)
+        if ($sup0 -or (-not $sup1) -or $sup2)
+        {
+            Write-Host '    FAIL: ntfy circuit breaker logic is wrong'
+            $fail++
+        }
+
     }
     finally
     {
@@ -1444,7 +1515,7 @@ function Invoke-SelfTest
         Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
     }
 
-    if ($fail -eq 0) { Write-Host 'SELFTEST PASSED (8 checks)' }
+    if ($fail -eq 0) { Write-Host 'SELFTEST PASSED (9 checks)' }
     else { Write-Host ("SELFTEST FAILED (" + $fail + " problem(s))") }
     return $fail
 }
