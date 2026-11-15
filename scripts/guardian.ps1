@@ -40,6 +40,10 @@ $AB_FLAG        = Join-Path $NAPCAT_HOME "restart-astrbot.flag"
 $FORCE_FLAG     = Join-Path $NAPCAT_HOME "force-relaunch.flag"
 # 机器人登录状态文件：给 qrsync 网页读，用来在页面上显示"需要扫码"提示
 $STATE_FILE = Join-Path $NAPCAT_HOME "qrsync\login-state.json"
+# 本次登录（= 当前票据）开始的时间，用于主动续期
+$SESSION_FILE = Join-Path $NAPCAT_HOME "session-since.txt"
+# 可观测性：给 qrsync 网页 / 外部监控读的一页指标（会话时长、今日被踢次数、下次探针时间）
+$METRICS_FILE = Join-Path $NAPCAT_HOME "metrics.json"
 
 # ---------------- 敏感配置：从 guardian.config.json 读取（该文件不进 git） ----------------
 # 文件格式（缺项就用本文件里的默认值）：
@@ -127,6 +131,20 @@ $FOREIGN_WAIT_MIN = 30
 # 代价：切换的那一刻机器人要重新扫码登录一次（新目录里没有登录票）。
 $QQ_DATA_DIR = Join-Path $NAPCAT_HOME "qqdata"   # 留空 = 不隔离（与桌面 QQ 共用）
 
+# ---- 主动会话续期（2026-11-15 取证后新增）----
+# 14 次被踢的会话存活时长：121/137/50/35/26/116/117/18/109/117/121/117/121/112 分钟，
+# 中位 117，10/14 落在 109-121 区间；被踢前 30 行没有任何网络告警、也没有发送失败，
+# 且被踢时常常正在正常收发消息 —— 这不是"静默超时"，更像登录票据的约 2 小时有效期。
+# 既然有效期从登录那一刻开始算，那就在到期前主动 RestartNapCat 重新登录一次
+# （刷新票据），把"随时可能被踢 + 需要等恢复"变成"计划内的 30 秒重启"。
+# 只在没人聊天时做（$PROACTIVE_IDLE_MIN），避免打断对话。0 = 关闭。
+# 2026-11-15 13:03 实测：按 100 分钟主动 RestartNapCat 续期，worker 起来后
+# 直接停在二维码（isLogin=False、无 loginError），票据并没有被复用 ——
+# 也就是说这条路会强制一次扫码，比被踢还糟。所以默认关闭（0）。
+# 若以后要重新试，把它改成 100 并接受"可能每次都要扫码"的代价。
+$PROACTIVE_REFRESH_MIN = 0
+$PROACTIVE_IDLE_MIN    = 5
+
 # Random natural-looking keep-alive messages (sent to self)
 $KA_POOL = @(
     "ok",
@@ -207,7 +225,7 @@ function ConvertTo-NtfyHeaderText([string]$s)
 }
 
 # ---------------- 备用通道 1：邮件（国内可达，最稳） ----------------
-function Send-EmailNotification([string]$title, [string]$body)
+function Send-EmailNotification([string]$title, [string]$body, [string]$attachPath = "")
 {
     if (-not $NOTIFY_EMAIL) { return $false }
     try
@@ -230,6 +248,22 @@ function Send-EmailNotification([string]$title, [string]$body)
         $msg.Body = $body
         $msg.BodyEncoding = [System.Text.Encoding]::UTF8
         $msg.IsBodyHtml = $false
+        # 需要扫码时把二维码图片作为附件带上：手机邮件里直接长按识别，
+        # 不用再切浏览器/找链接（ntfy 在国内经常超时，邮件才是主通道）。
+        if ($attachPath -and (Test-Path $attachPath))
+        {
+            try
+            {
+                # 两个参数的 ctor 在 PS 5.1 上会抛 NullReferenceException（2026-11-15 实测），
+                # 改成单参数 ctor；先复制一份到 %TEMP%，避免 NapCat 正在写这个文件。
+                $tmpAtt = Join-Path $env:TEMP ("qrcode-" + (Get-Date -Format "HHmmss") + ".png")
+                Copy-Item -LiteralPath $attachPath -Destination $tmpAtt -Force
+                $att = New-Object System.Net.Mail.Attachment($tmpAtt)
+                $att.Name = "qrcode.png"
+                $msg.Attachments.Add($att) | Out-Null
+            }
+            catch { Write-Log ("email attachment error: " + $_.Exception.Message) }
+        }
         $client = New-Object System.Net.Mail.SmtpClient([string]$cfg.smtp, $port)
         $client.EnableSsl = $true
         $client.Timeout = 20000
@@ -343,6 +377,80 @@ function Get-NapCatLastActivity
     # 以前这里返回 Get-Date，等于宣称"刚刚还有收发"，空闲时间永远是 0，
     # 保活（健康探针）就再也不会发出去 —— 日志不存在恰恰是最需要探活的时候。
     return [DateTime]::MinValue
+}
+
+# ---------------- 会话起点（主动续期用） ----------------
+# session-since.txt 只存一行 "yyyy-MM-ddTHH:mm:ss"（本地时间，无时区后缀）。
+# guardian 自己重启（计划任务拉起、手动 -TestNotify 之外的重启）不应该把
+# 会话时长清零：票据还是那张票据，续期时间点也不应该被推迟。
+$script:SessionSince = [DateTime]::MinValue
+function Set-SessionSince([DateTime]$t)
+{
+    $script:SessionSince = $t
+    try
+    {
+        [IO.File]::WriteAllText($SESSION_FILE, $t.ToString("yyyy-MM-ddTHH:mm:ss"),
+            (New-Object System.Text.UTF8Encoding($false)))
+    }
+    catch { Write-Log ("session file write error: " + $_.Exception.Message) }
+}
+function Confirm-SessionSince
+{
+    if ($script:SessionSince -ne [DateTime]::MinValue) { return }
+    $t = [DateTime]::MinValue
+    if (Test-Path $SESSION_FILE)
+    {
+        try
+        {
+            $raw = (Get-Content $SESSION_FILE -Raw).Trim()
+            $t = [DateTime]::ParseExact($raw, "yyyy-MM-ddTHH:mm:ss", $null)
+        }
+        catch { $t = [DateTime]::MinValue }
+    }
+    if ($t -eq [DateTime]::MinValue) { $t = Get-Date }
+    $script:SessionSince = $t
+}
+function Get-SessionMinutes
+{
+    if ($script:SessionSince -eq [DateTime]::MinValue) { return -1 }
+    return [int]((Get-Date) - $script:SessionSince).TotalMinutes
+}
+
+# 一页指标：网页/监控读这个文件就够了，不必去解析日志。
+# kicksToday 只来自 kick.log（每次被踢一行），所以它统计的是"真实被踢"，
+# 不包含假在线/网络抖动 —— 后者在日志里是另一类事件，混在一起会误导。
+function Write-Metrics([datetime]$nextProbe)
+{
+    try
+    {
+        $today = (Get-Date).ToString("yyyy-MM-dd")
+        $kicksToday = 0
+        $lastKick = ""
+        if (Test-Path $KICK_LOG)
+        {
+            foreach ($ln in (Get-Content $KICK_LOG -Tail 200 -ErrorAction SilentlyContinue))
+            {
+                if ($ln -match '^\[(\d{4}-\d{2}-\d{2})')
+                {
+                    if ($Matches[1] -eq $today) { $kicksToday++ }
+                    if ($ln -match 'at=([0-9]{2}-[0-9]{2} [0-9:]+)') { $lastKick = $Matches[1] }
+                }
+            }
+        }
+        $obj = [ordered]@{
+            at          = (Get-Date -Format "yyyy-MM-ddTHH:mm:sszzz")
+            state       = $script:LastState
+            sessionMin  = (Get-SessionMinutes)
+            kicksToday  = $kicksToday
+            lastKick    = $lastKick
+            nextProbeAt = $nextProbe.ToString("HH:mm")
+            probeMin    = [int]($KEEPALIVE_MIN / 60)
+            uin         = $QQ_UIN
+        }
+        [IO.File]::WriteAllText($METRICS_FILE, ($obj | ConvertTo-Json -Compress),
+            (New-Object System.Text.UTF8Encoding($false)))
+    }
+    catch { }
 }
 
 # ---------------- 下一次保活时间：重尾分布 ----------------
@@ -613,8 +721,24 @@ function Read-NewNapCatLog
             elseif ($null -ne $gapMin) { $gapTxt = "$gapMin min (file-level)" }
             else { $gapTxt = "unknown" }
             $kickAt = if ($lineTs) { $lineTs.ToString("MM-dd HH:mm:ss") } else { "unknown" }
-            Add-KickLog ("KICKED | at=" + $kickAt + " | log=" + $f.Name + " | quiet_before_kick=" + $gapTxt)
-            Write-Log ("kick detected in NapCat log (quiet before kick: " + $gapTxt + ")")
+            # 取证三件套：这张票据活了多久 / 被踢前静了多久 / 当时出口 IP。
+            # 有了 session= 这一列，才能验证"约 2 小时 TTL"这个假设成立与否。
+            $sessTxt = "unknown"
+            $sm = Get-SessionMinutes
+            if ($sm -ge 0) { $sessTxt = "$sm min" }
+            $ipTxt = "unknown"
+            try
+            {
+                $ipObj = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+                         Where-Object { $_.IPAddress -notlike "169.254.*" -and $_.IPAddress -notlike "127.*" } |
+                         Select-Object -First 1
+                if ($ipObj) { $ipTxt = [string]$ipObj.IPAddress }
+            }
+            catch { }
+            Add-KickLog ("KICKED | at=" + $kickAt + " | log=" + $f.Name + " | session=" + $sessTxt +
+                         " | quiet_before_kick=" + $gapTxt + " | ip=" + $ipTxt)
+            Write-Log ("kick detected in NapCat log (session " + $sessTxt + ", quiet before kick: " + $gapTxt + ")")
+            $script:KickSeen = $true
         }
         if ($null -ne $lineTs) { $script:NapLastLineTs = $lineTs }
     }
@@ -843,6 +967,20 @@ function Launch-NapCat
         }
     }
     Write-Log "  login did not complete in time."
+    # 登录窗口用完却没报"登录态失效" = 客户端停在二维码页等人扫
+    # （NapCat 只有需要扫码时才出新码）。以前这里返回 "timeout"，
+    # 主循环当成失败、下一轮又走一遍恢复，把用户正在扫的那张码冲掉。
+    $qrFresh = $false
+    if (Test-Path $QR_FILE)
+    {
+        $qrFresh = ((Get-Date) - (Get-Item $QR_FILE).LastWriteTime).TotalMinutes -lt 10
+    }
+    if ($qrFresh)
+    {
+        Write-Log "  a fresh QR code is waiting - asking the user to scan instead of restarting."
+        Notify-Admin
+        return "need_scan"
+    }
     return "timeout"
 }
 
@@ -850,6 +988,20 @@ function Launch-NapCat
 # Returns $true if back online, $false if a manual QR scan is required.
 function Do-Recovery
 {
+    # ---- Case 0: 已经有一张新码在等人扫 ----
+    # NapCat 只在"需要扫码"时才生成新码，所以 10 分钟内的码 = 用户正看着的那张。
+    # 这时再走恢复流程（重启 worker / 全量重启）只会把码冲掉、让用户白扫一次。
+    if (Test-Path $QR_FILE)
+    {
+        $qrAgeMin = ((Get-Date) - (Get-Item $QR_FILE).LastWriteTime).TotalMinutes
+        $lsq = Get-LoginStatus
+        if ($qrAgeMin -lt 10 -and $null -ne $lsq -and (-not $lsq.login) -and (-not $lsq.err))
+        {
+            Write-Log ("a fresh QR code is already waiting (" + [int]$qrAgeMin + " min old) - not restarting; asking the user to scan.")
+            if (Wait-Scan) { return "online" }
+            return "need_scan"
+        }
+    }
     # ---- Case 1: WebUI unreachable -> NapCat is NOT running at all
     # (typical right after boot / after a crash). Launch it immediately;
     # waiting through the grace period here would waste minutes.
@@ -914,13 +1066,31 @@ function Do-Recovery
 
     # ---- Case 3: NapCat is up, probably a brief network blip or a kick.
     # Phase A: grace period first (wait for self-heal, do NOT kill).
-    Write-Log "Phase A: grace period, waiting for network self-heal (up to 90s) ..."
-    for ($i = 0; $i -lt 6; $i++)
+    if ($script:KickSeen)
     {
-        Start-Sleep -Seconds 15
-        Write-Heartbeat
-        $o = Get-Online
-        if ($o) { Write-Log "  self-healed during grace period."; return "online" }
+        # [KickedOffLine] = 腾讯吊销了这张票，不是网络抖动。
+        # 2026-11-15 实测（13:03 那次主动续期）：worker 重启（RestartNapCat）
+        # 之后票据不会被复用，isLogin=False、无 loginError —— 也就是停在二维码上；
+        # 而完整重启（杀 QQ -> launcher，Phase D）在 07:33 和 12:52 两次都用
+        # 缓存票直接登回来了。所以被踢时 A/B/C 三层全是白等：直接走 Phase D。
+        $script:KickSeen = $false
+        Write-Log "Phase A/B/C skipped: [KickedOffLine] - ticket revoked; only a full relaunch can reuse the cached token."
+        Write-Log "Phase D: full relaunch ..."
+        $rk = Launch-NapCat
+        if ($rk -eq "online") { Write-Log "  full relaunch succeeded."; return "online" }
+        if ($rk -eq "need_scan") { Write-Log "  session expired after relaunch."; Notify-Admin; return "need_scan" }
+        return "failed"
+    }
+    else
+    {
+        Write-Log "Phase A: grace period, waiting for network self-heal (up to 90s) ..."
+        for ($i = 0; $i -lt 6; $i++)
+        {
+            Start-Sleep -Seconds 15
+            Write-Heartbeat
+            $o = Get-Online
+            if ($o) { Write-Log "  self-healed during grace period."; return "online" }
+        }
     }
 
     # Phase B: in-process quick login (lightweight, no restart).
@@ -977,6 +1147,8 @@ function Notify-Admin
     if ($QR_PAGE_URL) { $body += "扫码页（自动换码）: $QR_PAGE_URL`n" }
     $body += "本机图片: $NAPCAT_DIR\cache\qrcode.png"
     Send-Notification "need_scan" "NapCat bot needs QR scan" $body "high"
+    # Send-Notification 的邮件是不带附件的（去重后可能被抑制），这里单独补一封带图的。
+    $null = Send-EmailNotification "NapCat 需要扫码（二维码见附件）" $body $QR_FILE
     try { msg.exe * $body } catch {}
 }
 
@@ -1026,7 +1198,12 @@ function Send-KeepAlive
         $r = Invoke-RestMethod -Uri "$HTTP_API/send_private_msg" -Method Post `
                 -Body ([System.Text.Encoding]::UTF8.GetBytes($body)) `
                 -ContentType "application/json; charset=utf-8" -TimeoutSec 15
-        if ($r.retcode -eq 0) { Write-Log ("keep-alive sent: " + $msg) }
+        if ($r.retcode -eq 0)
+        {
+            $sessKA = Get-SessionMinutes
+            $sessTxt = if ($sessKA -ge 0) { " (session " + $sessKA + "m)" } else { "" }
+            Write-Log ("keep-alive sent: " + $msg + $sessTxt)
+        }
         else { Write-Log ("keep-alive retcode: " + $r.retcode) }
     }
     catch { Write-Log ("keep-alive error: " + $_.Exception.Message) }
@@ -1157,6 +1334,8 @@ $lastQuietLog = [DateTime]::MinValue   # 熔断/夜间提示的限频时间戳
 $nextKeepAlive = (Get-Date).AddSeconds((Get-NextKeepAliveDelay))
 $script:ForeignSince = [DateTime]::MinValue   # 桌面 QQ 已运行多久（超过上限才强行抢回机器人）
 $script:LastResetAt  = [DateTime]::MinValue   # 上次"连接重置"的时间（发送失败探测限频）
+$script:KickSeen     = $false                 # 本掉线事件里是否已从日志确认 [KickedOffLine]
+$script:WasHealthy   = $null                  # 上一轮的健康状态（$null = 本进程还没判断过）（用于检测 false->true 跃迁，重置会话起点）
 $script:UnhealthyLogged   = $false            # 本次掉线是否已经记过 unhealthy 日志（限频用）
 $script:LastUnhealthyLog  = [DateTime]::MinValue
 
@@ -1255,6 +1434,10 @@ while ($true)
 
     if ($healthy)
     {
+        # 会话起点：guardian 自己重启后从 session-since.txt 恢复（票据没变，
+        # 续期时间点也不该被推迟）；只有"掉线 -> 在线"的真跃迁才重置为现在。
+        if ($null -eq $script:WasHealthy) { Confirm-SessionSince }
+        elseif (-not $script:WasHealthy) { Set-SessionSince (Get-Date) }
         if ($offlineCount -gt 0) { Write-Log "back online" }
         Set-BotState "online" "已登录"
         $offlineCount = 0
@@ -1282,6 +1465,39 @@ while ($true)
             $script:UnhealthyLogged  = $true
             $script:LastUnhealthyLog = $nowU
             Write-Log ("unhealthy detected (" + $offlineCount + "/" + $OFFLINE_LIMIT + "): " + $why)
+        }
+    }
+
+    # ---- 主动会话续期：在"约 2 小时被踢"之前主动重新登录 ----
+    if ($healthy -and $PROACTIVE_REFRESH_MIN -gt 0)
+    {
+        Confirm-SessionSince
+        $sessMin  = Get-SessionMinutes
+        $idlePro  = ((Get-Date) - (Get-NapCatLastActivity)).TotalMinutes
+        if ($sessMin -ge $PROACTIVE_REFRESH_MIN -and $idlePro -ge $PROACTIVE_IDLE_MIN)
+        {
+            Write-Log ("proactive session refresh: session " + $sessMin + " min old, idle " +
+                       [int]$idlePro + " min - restarting worker to renew the ticket ...")
+            try
+            {
+                $hpr = Get-WebUIHeaders
+                Invoke-RestMethod -Uri "$WEBUI_API/api/QQLogin/RestartNapCat" -Method Post `
+                    -Headers $hpr -TimeoutSec 20 | Out-Null
+            }
+            catch { Write-Log ("  refresh call error: " + $_.Exception.Message) }
+            if (Wait-Login $WORKER_WAIT_SEC)
+            {
+                Set-SessionSince (Get-Date)
+                Set-BotState "online" "已登录"
+                Write-Log "  session refreshed (new ticket); no scan needed."
+            }
+            else
+            {
+                Write-Log "  proactive refresh did not log back in - handing over to normal recovery."
+                $offlineCount = $OFFLINE_LIMIT
+                $script:UnhealthyLogged = $false
+                $healthy = $false
+            }
         }
     }
 
@@ -1372,6 +1588,8 @@ while ($true)
         $offlineCount = 0
     }
 
+    $script:WasHealthy = $healthy
+    Write-Metrics $nextKeepAlive
     Write-Heartbeat
     Start-Sleep -Seconds $CHECK_INTERVAL
 }
