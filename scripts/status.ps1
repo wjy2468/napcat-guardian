@@ -38,6 +38,7 @@ function Get-AgeMinutes([string]$iso) {
 $metrics   = Read-JsonFile (Join-Path $Root 'metrics.json')
 $astrbot   = Read-JsonFile (Join-Path $Root 'astrbot-state.json')
 $loginSt   = Read-JsonFile (Join-Path $Root 'qrsync\login-state.json')
+$tunnel    = Read-JsonFile (Join-Path $Root 'qrsync\tunnel-state.json')
 
 # --- 看护心跳 ---
 $hbPid = $null
@@ -100,6 +101,11 @@ if ($loginSt -and $loginSt.state -eq 'need_scan') {
     if ($verdict -eq 'OK') { $verdict = 'WARN' }
     [void]$reasons.Add('登录态失效，等扫码')
 }
+if ($tunnel -and $tunnel.ok -eq $false) {
+    $tAge = Get-AgeMinutes $tunnel.at
+    if ($verdict -eq 'OK') { $verdict = 'WARN' }
+    [void]$reasons.Add("扫码页公网通道自检失败（$($tunnel.provider)，$tAge 分钟前）")
+}
 
 if ($Json) {
     [ordered]@{
@@ -111,6 +117,7 @@ if ($Json) {
         session       = $metrics
         astrbot       = $astrbot
         loginState    = $loginSt
+        tunnel        = $tunnel
         recentKicks   = @($recentKicks)
     } | ConvertTo-Json -Depth 6
     return
@@ -148,6 +155,15 @@ if ($astrbot) {
 }
 
 if ($loginSt) { Write-Host ('  登录状态    ' + $loginSt.state + ' — ' + $loginSt.note) }
+
+if ($tunnel) {
+    $tAge = Get-AgeMinutes $tunnel.at
+    $tColor = if ($tunnel.ok -eq $true) { 'Green' } else { 'Yellow' }
+    $tText = if ($tunnel.ok -eq $true) { '正常' } else { '自检失败' }
+    Write-Host ('  扫码通道    ' + $tunnel.provider + ' / ' + $tText + '，' + $tAge + ' 分钟前 · ' + $tunnel.url) -ForegroundColor $tColor
+} else {
+    Write-Host '  扫码通道    状态文件缺失（qrsync daemon 没在写 tunnel-state.json）' -ForegroundColor Yellow
+}
 
 if ($recentKicks.Count -gt 0) {
     Write-Host ''

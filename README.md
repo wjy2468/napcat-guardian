@@ -192,6 +192,7 @@ PS> .\scripts\status.ps1
   看护        Running，心跳 0 分钟前（PID 12256）
   AstrBot     online，pid 22512，重启 0 次，0 分钟前
   登录状态    online — 已登录
+  扫码通道    ngrok / 正常，0 分钟前 · https://swampland-abacus-afar.ngrok-free.dev
 
   [OK] 一切正常
 ```
@@ -200,6 +201,9 @@ PS> .\scripts\status.ps1
 - `-Json` 输出结构化结果，方便接监控；
 - `-Root` 指定 NapCat 根目录（默认 `D:\napcat`）。
 - 它**不发消息、不重启任何东西**，机器人正在等扫码时也可以放心跑。
+- 「扫码通道」那行的数据来自 `qrsync\tunnel-state.json`：公网入口连续不可用超过
+  `$TUNNEL_ALERT_MIN`（默认 10 分钟）时，看护会发一封告警邮件——因为扫码页是你唯一
+  的远程自救通道，等你要扫码时才发现它打不开就晚了。
 
 ### 7. 诊断：这次为什么被踢？
 

@@ -20,6 +20,7 @@ $ErrorActionPreference = 'Continue'
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $logFile = Join-Path $root 'daemon.log'
 $cfgPath = Join-Path $root 'config.json'
+$stateFile = Join-Path $root 'tunnel-state.json'
 
 function Rotate-Log {
   if (Test-Path $logFile) {
@@ -31,6 +32,22 @@ function Log([string]$msg, [string]$color = 'Gray') {
   $line = "{0}  {1}" -f (Get-Date -Format 'MM-dd HH:mm:ss'), $msg
   try { Add-Content -Path $logFile -Value $line -Encoding utf8 } catch {}
   Write-Host $line -ForegroundColor $color
+}
+
+# 把隧道健康状态落盘，供 guardian（有邮件通道）判断"公网扫码入口是否已经连不上"。
+# 只写这四个字段，页面/脚本读起来不用猜。
+function Write-State([string]$provider, [bool]$ok, [string]$url, [int]$streak = 0) {
+  try {
+    $o = [ordered]@{
+      at         = (Get-Date -Format 'yyyy-MM-ddTHH:mm:sszzz')
+      provider   = $provider
+      ok         = $ok
+      url        = $url
+      failStreak = $streak
+    }
+    [IO.File]::WriteAllText($stateFile, ($o | ConvertTo-Json -Compress), (New-Object Text.UTF8Encoding($false)))
+  }
+  catch {}
 }
 
 Rotate-Log
@@ -185,7 +202,28 @@ function Start-Tunnel {
           -RedirectStandardOutput $logPath -RedirectStandardError "$logPath.err"
         $url = "https://$($cfg.ngrok.domain)"
         Start-Sleep -Seconds 5
-        if ($proc.HasExited) { Log '  ngrok 启动即退出，看 tunnel-ngrok.log' 'Yellow'; $proc = $null } else { $started = $true }
+        if ($proc.HasExited) {
+          # 常见坑：守护上次被杀（任务结束/机器没重启）但 ngrok 还挂着同一个固定域名，
+          # 新进程会立刻 ERR_NGROK_334 退出，然后静默退到 cloudflare —— 域名就变了，
+          # 用户手里的扫码链接直接失效。这里把占着域名的旧 ngrok 干掉再试一次。
+          $logTxt = ''
+          try { $logTxt = (Get-Content $logPath -Raw -ErrorAction SilentlyContinue) + (Get-Content "$logPath.err" -Raw -ErrorAction SilentlyContinue) } catch {}
+          if ($logTxt -match 'ERR_NGROK_334|is already online') {
+            Log '  固定域名被残留的 ngrok 进程占用，清理后重试' 'Yellow'
+            try {
+              Get-CimInstance Win32_Process -Filter "Name='ngrok.exe'" -ErrorAction SilentlyContinue |
+                Where-Object { $_.ProcessId -ne $proc.Id -and $_.CommandLine -and $_.CommandLine -like "*$($cfg.ngrok.domain)*" } |
+                ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop; Log ("  已结束残留 ngrok PID " + $_.ProcessId) 'Yellow' } catch {} }
+            } catch {}
+            Start-Sleep -Seconds 2
+            Remove-Item $logPath, "$logPath.err" -Force -ErrorAction SilentlyContinue
+            $proc = Start-Process -FilePath $exe -ArgumentList $ngArgs `
+              -WorkingDirectory $root -WindowStyle Hidden -PassThru `
+              -RedirectStandardOutput $logPath -RedirectStandardError "$logPath.err"
+            Start-Sleep -Seconds 5
+          }
+          if ($proc.HasExited) { Log '  ngrok 启动即退出，看 tunnel-ngrok.log' 'Yellow'; $proc = $null } else { $started = $true }
+        } else { $started = $true }
       }
     }
     elseif ($name -eq 'cloudflare') {
@@ -284,9 +322,11 @@ while ($true) {
       }
       $failStreak = 0
       $backoff = 5
+      Write-State $tunnel.name $true $tunnel.url 0
     }
     else {
       Log "没有可用隧道，${backoff}s 后重试" 'Red'
+      Write-State '' $false '' 0
       Start-Sleep -Seconds $backoff
       $backoff = [Math]::Min(60, $backoff * 2)
       continue
@@ -297,9 +337,13 @@ while ($true) {
   if (((Get-Date) - $lastHealth).TotalSeconds -ge $healthEvery) {
     $lastHealth = Get-Date
     if ($tunnel -and $tunnel.url -and $tunnel.proc -and -not $tunnel.proc.HasExited) {
-      if (Test-Public $tunnel.url) { $failStreak = 0 }
+      if (Test-Public $tunnel.url) {
+        $failStreak = 0
+        Write-State $tunnel.name $true $tunnel.url 0
+      }
       else {
         $failStreak++
+        Write-State $tunnel.name $false $tunnel.url $failStreak
         Log "公网自检失败（连续 $failStreak 次）" 'Yellow'
         if ($failStreak -ge 2) {
           Log '判定隧道假死，重建' 'Red'
