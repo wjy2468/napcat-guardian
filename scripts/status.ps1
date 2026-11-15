@@ -129,7 +129,12 @@ if ($metrics) {
     $sess = if ($metrics.sessionMin -ge 0) { "$($metrics.sessionMin) 分钟" } else { '未登录' }
     Write-Host ('  本次登录    ' + $sess)
     Write-Host ('  今日被踢    ' + $metrics.kicksToday + ' 次' + $(if ($metrics.lastKick) { '，最近 ' + $metrics.lastKick } else { '' }))
-    if ($metrics.lastRecoverSec -gt 0) { Write-Host ('  上次恢复    ' + $metrics.lastRecoverSec + ' 秒（' + $metrics.lastRecoverAt + '）') }
+    if ($metrics.lastRecoverSec -gt 0) {
+        $how = ''
+        if ($metrics.lastCause -and $metrics.lastPath) { $how = "（$($metrics.lastCause) / $($metrics.lastPath)）" }
+        elseif ($metrics.lastPath) { $how = "（$($metrics.lastPath)）" }
+        Write-Host ('  上次恢复    ' + $metrics.lastRecoverSec + ' 秒' + $how + ' @ ' + $metrics.lastRecoverAt)
+    }
     Write-Host ('  下次探针    ' + $metrics.nextProbeAt)
 }
 
