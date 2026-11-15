@@ -736,6 +736,15 @@ snapshot: D:\napcat\incidents\20261115-143014
 `summary.txt` 是"一眼看完"的那页：心跳与年龄、任务状态与 `LastTaskResult`、OneBot `get_status`、QQ 登录态（`isLogin` / `loginError`）、最近的 NapCat 日志文件及大小。
 
 参数：`-Root`（默认 `D:\napcat`）、`-Out`（默认 `incidents\<yyyyMMdd-HHmmss>`）、`-TailLines`（默认 200）、`-AstrBotDir`（默认从 `guardian.config.json` 的 `astrbotLog` 反推）。**全程只读**，不发邮件、不重启任何东西。
+
+被踢时守护会自动跑它一次（`invoke-incident-snapshot` 分支，10 分钟限频，独立进程，不阻塞主循环），日志里能看到：
+
+```
+[2026-11-15 14:34:04] kick detected in NapCat log (session 72 min, quiet before kick: 9 min)
+[2026-11-15 14:34:04] incident snapshot started (kick): D:\napcat\incident-snapshot.ps1
+```
+
+部署时把这个脚本和 `guardian.ps1` 放在**同一目录**（或放在 `-Root` 下），守护两处都会找。
 ## 关键踩坑记录
 
 这些是我们实际验证过、确认"走不通"的方向，避免你重复踩坑：

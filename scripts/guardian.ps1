@@ -39,6 +39,13 @@ $NAPCAT_DIR     = Join-Path $NAPCAT_HOME "NapCat.Shell"
 $LOG_FILE       = Join-Path $NAPCAT_HOME "guardian.log"
 $QR_FILE        = Join-Path $NAPCAT_DIR  "cache\qrcode.png"
 $KICK_LOG       = Join-Path $NAPCAT_HOME "kick.log"
+
+# 掉线现场快照（incident-snapshot.ps1）：被踢时自动抓一次，10 分钟限频。
+# 先找脚本同目录，其次找部署根目录——两种放法都能用。
+$SNAPSHOT_SCRIPT = Join-Path $PSScriptRoot "incident-snapshot.ps1"
+if (-not (Test-Path $SNAPSHOT_SCRIPT)) { $SNAPSHOT_SCRIPT = Join-Path $NAPCAT_HOME "incident-snapshot.ps1" }
+$SNAPSHOT_MIN_GAP_MIN = 10
+$script:LastSnapshot = [DateTime]::MinValue
 $HEARTBEAT_FILE = Join-Path $NAPCAT_HOME "guardian.heartbeat"
 $AB_FLAG        = Join-Path $NAPCAT_HOME "restart-astrbot.flag"
 $FORCE_FLAG     = Join-Path $NAPCAT_HOME "force-relaunch.flag"
@@ -866,6 +873,7 @@ function Read-NewNapCatLog
                          " | quiet_before_kick=" + $gapTxt + " | ip=" + $ipTxt)
             Write-Log ("kick detected in NapCat log (session " + $sessTxt + ", quiet before kick: " + $gapTxt + ")")
             $script:KickSeen = $true
+            Invoke-IncidentSnapshot "kick"
         }
         if ($null -ne $lineTs) { $script:NapLastLineTs = $lineTs }
     }
@@ -979,6 +987,34 @@ function Wait-Login
 # 用 Start-Process -WindowStyle Minimized 会留下一个可见的 cmd 窗口，
 # 关掉它就会连带把 NapCat / AstrBot 一起杀掉。CreateNoWindow 才是真正的
 # "没有窗口"：进程连控制台都不分配。
+# 掉线现场快照：把六份状态文件与四路日志尾部抓进 incidents\<时间戳>\。
+# 只在"确认被踢"时触发，且 10 分钟限频；用独立进程跑，绝不让取证拖慢主循环。
+function Invoke-IncidentSnapshot([string]$reason)
+{
+    try
+    {
+        if (-not $SNAPSHOT_SCRIPT -or -not (Test-Path $SNAPSHOT_SCRIPT))
+        {
+            Write-Log "incident snapshot skipped: script not found ($SNAPSHOT_SCRIPT)"
+            return
+        }
+        $now = Get-Date
+        if ($script:LastSnapshot -ne [DateTime]::MinValue -and ($now - $script:LastSnapshot).TotalMinutes -lt $SNAPSHOT_MIN_GAP_MIN)
+        {
+            Write-Log ("incident snapshot skipped: last one " + [int]($now - $script:LastSnapshot).TotalMinutes + " min ago")
+            return
+        }
+        $script:LastSnapshot = $now
+        $snapArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$SNAPSHOT_SCRIPT`" -Root `"$NAPCAT_HOME`""
+        $null = Start-Hidden "powershell.exe" $snapArgs $NAPCAT_HOME
+        Write-Log ("incident snapshot started (" + $reason + "): " + $SNAPSHOT_SCRIPT)
+    }
+    catch
+    {
+        Write-Log ("incident snapshot failed: " + $_.Exception.Message)
+    }
+}
+
 function Start-Hidden
 {
     param(
