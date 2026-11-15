@@ -628,6 +628,21 @@ powershell -NoProfile -ExecutionPolicy Bypass -File D:\napcat\guardian.ps1 -Test
 python .\scripts\daily-report.py      # 只看不发：填好配置后它会发邮件，也可直接读 provider_stats
 ```
 
+### 13. 反向看护：谁来看护看护者
+
+`guardian.ps1` 负责救机器人，但它自己挂了没人知道——2026-11-15 就真发生过一次（编辑脚本时丢了 BOM，守护静默退出，网页却还显示"在线"）。
+
+所以 `astrbot_watchdog.ps1` 反过来盯它的心跳：读 `D:\napcat\guardian.heartbeat`，**超过 10 分钟没更新就发邮件**（用 `guardian.config.json` 里的 `notifyEmail`，一小时内最多一封）。
+
+```
+# 单独跑一次检查（不发信也可看结论）
+.\scripts\astrbot_watchdog.ps1 -CheckGuardian
+guardian heartbeat: pid=33808 at=13:58:50 ageMin=0
+healthy=True
+```
+
+两个进程互相盯着，就不再存在"单点静默死亡"：guardian 死了 AstrBot 看护会喊，AstrBot 死了 guardian 会重启它。邮件里直接给出排查和恢复命令。
+
 ---
 ## 关键踩坑记录
 

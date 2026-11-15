@@ -5,10 +5,12 @@
 #   - 启动时若没在跑，也会立刻拉起（兼任开机自启）
 #   - 日志：D:\napcat\astrbot_watchdog.log（>2MB 轮转为 .1）
 #   - 停止：astrbot_watchdog.ps1 -Stop
+#   - 反向看护：guardian.ps1 的心跳超过 10 分钟没更新就发邮件告警（-CheckGuardian 可单独测）
 # ============================================================
 
 param(
-    [switch]$Stop
+    [switch]$Stop,
+    [switch]$CheckGuardian
 )
 
 $ErrorActionPreference = 'Continue'
@@ -28,6 +30,14 @@ $KEEP_CONSOLE_LOGS = 10   # $ASTRBOT_DIR 里最多保留几份 astrbot-console-*
 $STATE_FILE    = Join-Path $PSScriptRoot 'astrbot-state.json'
 $script:BotSince  = $null
 $script:Restarts  = 0
+
+# 反向看护：NapCat 看护（guardian.ps1）自己死了，没人会告诉我们 ——
+# 它挂了 = 机器人掉线后没人救、也没人发通知。所以由本脚本反过来盯它的心跳。
+# 2026-11-15 实测过一次这种静默死亡（edit 工具丢了 BOM，守护退出而网页仍显示"在线"）。
+$GUARDIAN_HB       = 'D:\napcat\guardian.heartbeat'
+$GUARDIAN_STALE_MIN = 10
+$GUARDIAN_ALERT_STAMP = Join-Path $PSScriptRoot 'guardian-alert.last'
+$GUARDIAN_ALERT_MIN   = 60
 
 # ---------------- Logging ----------------
 function Write-Log($msg) {
@@ -60,6 +70,105 @@ function Write-BotState([string]$state, [string]$note = '') {
             (New-Object System.Text.UTF8Encoding($false)))
     } catch { }
 }
+
+# ---------------- 反向看护：盯 guardian 的心跳 ----------------
+function Get-GuardianHeartbeat {
+    if (-not (Test-Path $GUARDIAN_HB)) { return $null }
+    try {
+        $raw = (Get-Content -LiteralPath $GUARDIAN_HB -Raw -ErrorAction Stop).Trim()
+        $parts = $raw.Split('|')
+        if ($parts.Count -lt 2) { return $null }
+        $ts = [datetime]::ParseExact($parts[1], 'yyyy-MM-ddTHH:mm:ss', [Globalization.CultureInfo]::InvariantCulture)
+        return [pscustomobject]@{ Pid = $parts[0]; At = $ts; AgeMin = [int]((Get-Date) - $ts).TotalMinutes }
+    } catch { return $null }
+}
+
+function Send-GuardianAlert([string]$body) {
+    $cfgPath = 'D:\napcat\guardian.config.json'
+    if (-not (Test-Path $cfgPath)) { Write-Log 'guardian 心跳告警：找不到 guardian.config.json，跳过发信'; return $false }
+    try {
+        $cfg = Get-Content -LiteralPath $cfgPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    } catch { Write-Log "guardian 心跳告警：配置解析失败 $($_.Exception.Message)"; return $false }
+    $mail = $cfg.notifyEmail
+    if (-not $mail -or -not $mail.smtp -or -not $mail.pass -or -not $mail.to) {
+        Write-Log 'guardian 心跳告警：notifyEmail 未配置完整，跳过发信'; return $false
+    }
+    try {
+        $msg = New-Object System.Net.Mail.MailMessage
+        $msg.From = New-Object System.Net.Mail.MailAddress($mail.user)
+        foreach ($to in ([string]$mail.to).Split(',')) {
+            if ($to.Trim()) { $msg.To.Add($to.Trim()) }
+        }
+        $msg.Subject = 'NapCat guardian heartbeat is stale'
+        $msg.SubjectEncoding = [Text.Encoding]::UTF8
+        $msg.Body = $body
+        $msg.BodyEncoding = [Text.Encoding]::UTF8
+        $client = New-Object System.Net.Mail.SmtpClient($mail.smtp, [int]$mail.port)
+        $client.EnableSsl = $true
+        $client.Timeout = 20000
+        $client.Credentials = New-Object System.Net.NetworkCredential($mail.user, $mail.pass)
+        $client.Send($msg)
+        $msg.Dispose(); $client.Dispose()
+        Write-Log 'guardian 心跳告警：邮件已发送'
+        return $true
+    } catch {
+        Write-Log "guardian 心跳告警：发信失败 $($_.Exception.Message)"
+        return $false
+    }
+}
+
+function Test-GuardianHeartbeat {
+    $hb = Get-GuardianHeartbeat
+    if ($null -eq $hb) {
+        Write-Log "反向看护：读不到 guardian 心跳（$GUARDIAN_HB 不存在或格式不对）"
+        return $false
+    }
+    if ($hb.AgeMin -le $GUARDIAN_STALE_MIN) { return $true }
+
+    # 限频：一小时内最多发一封，避免 guardian 长期死着时把邮箱刷爆
+    $lastAlert = $null
+    if (Test-Path $GUARDIAN_ALERT_STAMP) {
+        try {
+            $lastAlert = [datetime]::ParseExact((Get-Content -LiteralPath $GUARDIAN_ALERT_STAMP -Raw).Trim(),
+                'yyyy-MM-ddTHH:mm:ss', [Globalization.CultureInfo]::InvariantCulture)
+        } catch { $lastAlert = $null }
+    }
+    $elapsed = if ($lastAlert) { ((Get-Date) - $lastAlert).TotalMinutes } else { 9999 }
+    if ($elapsed -lt $GUARDIAN_ALERT_MIN) {
+        Write-Log "反向看护：guardian 心跳已 $($hb.AgeMin) 分钟未更新（PID $($hb.Pid)），$GUARDIAN_ALERT_MIN 分钟内已告警过"
+        return $false
+    }
+
+    Write-Log "反向看护：guardian 心跳已 $($hb.AgeMin) 分钟未更新（PID $($hb.Pid)，最后 $($hb.At.ToString('HH:mm:ss'))），发告警"
+    $body = @"
+NapCat 看护进程（guardian.ps1）的心跳已经 $($hb.AgeMin) 分钟没有更新。
+
+最后心跳：$($hb.At.ToString('yyyy-MM-dd HH:mm:ss'))（PID $($hb.Pid)）
+机器人：掉线后不会有人自动拉起；这次告警是 AstrBot 看护代发的。
+
+常见原因：脚本语法错误（尤其是编辑后丢了 UTF-8 BOM）、计划任务被停、进程被杀。
+排查：Get-ScheduledTask NapCatGuardian
+      Get-Content D:\napcat\guardian.log -Tail 30
+恢复：Start-ScheduledTask NapCatGuardian
+"@
+    if (Send-GuardianAlert $body) {
+        [IO.File]::WriteAllText($GUARDIAN_ALERT_STAMP, (Get-Date).ToString('yyyy-MM-ddTHH:mm:ss'),
+            (New-Object System.Text.UTF8Encoding($false)))
+        return $false
+    }
+    return $false
+}
+
+# ---------------- -CheckGuardian：只跑一次反向检查就退出 ----------------
+if ($CheckGuardian) {
+    $hb = Get-GuardianHeartbeat
+    if ($hb) { "guardian heartbeat: pid=$($hb.Pid) at=$($hb.At.ToString('HH:mm:ss')) ageMin=$($hb.AgeMin)" }
+    else { 'guardian heartbeat: unreadable' }
+    $ok = Test-GuardianHeartbeat
+    "healthy=$ok"
+    exit 0
+}
+
 # ---------------- -Stop：直接结束正在跑的那个实例 ----------------
 # 旧写法是"抢到互斥体才停"，可正在跑的时候互斥体恰恰是被它自己占着的：
 # 于是 -Stop 会走进"本实例不是主实例"分支直接退出，一次也停不掉，
@@ -173,8 +282,18 @@ Write-BotState $initState 'watchdog started'
 $lastHeartbeat = Get-Date
 $failStreak = 0
 
+$script:GuardianWasStale = $false
 while ($true) {
     Start-Sleep -Seconds $CHECK_SECONDS
+
+    # 反向看护：guardian 死了要有人知道（它自己发不出告警）
+    $hbOk = Test-GuardianHeartbeat
+    if (-not $hbOk -and -not $script:GuardianWasStale) {
+        $script:GuardianWasStale = $true
+    } elseif ($hbOk -and $script:GuardianWasStale) {
+        Write-Log '反向看护：guardian 心跳已恢复'
+        $script:GuardianWasStale = $false
+    }
 
     # 心跳（每 10 分钟一条，避免日志无限增长）
     if (((Get-Date) - $lastHeartbeat).TotalMinutes -ge 10) {
