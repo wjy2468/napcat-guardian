@@ -216,7 +216,12 @@ async function tick(){
       const parts=[];
       if(mt.sessionMin>=0) parts.push('本次登录 '+mt.sessionMin+' 分钟');
       parts.push('今日被踢 '+mt.kicksToday+' 次');
-      if(mt.lastRecoverSec>0) parts.push('上次恢复 '+mt.lastRecoverSec+' 秒');
+      if(mt.lastRecoverSec>0){
+  var how = '';
+  if(mt.lastCause && mt.lastPath) how = '（'+mt.lastCause+' / '+mt.lastPath+'）';
+  else if(mt.lastPath) how = '（'+mt.lastPath+'）';
+  parts.push('上次恢复 '+mt.lastRecoverSec+' 秒'+how);
+}
       if(mt.nextProbeAt) parts.push('下次探针 '+mt.nextProbeAt);
       const ab=s.astrbot;
       if(ab){
