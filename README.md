@@ -616,6 +616,18 @@ powershell -NoProfile -ExecutionPolicy Bypass -File D:\napcat\guardian.ps1 -Test
 
 **它自己是验过的**：把快速通道改成不可达、把"码在刷新"判据改成恒假，模拟测试分别报 2 项 / 1 项 FAIL——也就是说这两个历史 bug 现在会被直接抓住。
 
+### 12. AstrBot 一天烧多少 token：`docs/token-优化效果.md`
+
+机器人本身几乎不花 token，花的是 AstrBot 的 LLM 调用。2026-11-12 做过一轮压缩（群历史 3000 → 80、关掉两套 LLM 摘要、连击概率减半等），单次请求的平均输入从 **13–18 万** 降到 **4 万上下**，日总量从 1350 万降到 200–340 万。
+
+按天数据、每项改动的对照表、以及"缓存命中率为什么反而降了"的解释都在 [docs/token-优化效果.md](docs/token-优化效果.md)。
+
+查自己机器上的数据：
+
+```powershell
+python .\scripts\daily-report.py      # 只看不发：填好配置后它会发邮件，也可直接读 provider_stats
+```
+
 ---
 ## 关键踩坑记录
 
