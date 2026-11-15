@@ -22,6 +22,7 @@
 - [防风控 / 养号建议](#防风控--养号建议)
 - [常见问题](#常见问题)
 - [掉线取证（docs）](docs/掉线取证.md)
+- [o3HookMode 实验 Runbook](docs/实验-o3HookMode.md)
 - [免责声明](#免责声明)
 
 ---
@@ -290,6 +291,8 @@ Session length at kick (minutes)
 ---
 
 ### 8. 单变量实验：把 `o3HookMode` 改成 0
+
+> 完整步骤、观察期判据和回滚都在 [docs/实验-o3HookMode.md](docs/实验-o3HookMode.md)。
 
 社区诊断（[napcat-offline-diagnosis](https://github.com/TomoyoNatsume/dsh-qq-bridge/blob/main/docs/napcat-offline-diagnosis.md)，2026-09）给的唯一建议是**只改一个变量**：把 `config\napcat.json`（以及 `config\napcat_<QQ号>.json`）里的 `o3HookMode` 从 `1` 改成 `0`，其余一律不动，重启扫码后观察 24–48 小时。
 
