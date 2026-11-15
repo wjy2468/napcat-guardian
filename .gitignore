@@ -29,3 +29,7 @@ desktop.ini
 .vscode/
 .idea/
 *.tmp
+
+# Python
+__pycache__/
+*.pyc

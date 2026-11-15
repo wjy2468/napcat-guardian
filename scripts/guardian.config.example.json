@@ -1,4 +1,4 @@
-﻿{
+{
   "_comment": "复制到 D:\\napcat\\guardian.config.json（与 guardian.ps1 的 $NAPCAT_HOME 同目录）。该文件已被 .gitignore 忽略，不会进仓库。",
   "webuiToken": "YOUR_WEBUI_TOKEN",
   "qrPageUrl": "https://your-domain.example/?k=YOUR_KEY",
@@ -13,6 +13,9 @@
     "to": "YOUR_QQ@qq.com",
     "ssl": true
   },
+  "pythonExe": "%LOCALAPPDATA%\\Programs\\Python\\Python314\\python.exe",
+  "astrbotDb": "C:\\path\\to\\astrbot\\data\\data_v4.db",
+  "kickLog": "C:\\path\\to\\kick.log",
   "notifyWebhook": {
     "type": "custom",
     "url": ""

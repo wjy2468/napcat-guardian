@@ -531,6 +531,44 @@ powershell -NoProfile -ExecutionPolicy Bypass -File D:\napcat\guardian.ps1 -Test
 
 相关项目版权归各自所有：NapCat、AstrBot、QQ。
 
+## 每日日报
+
+`scripts/daily-report.py` 把三个平时散落在日志里的数字汇总成一封邮件：AstrBot token 消耗、被踢记录、AstrBot 看护重启次数。`guardian.ps1` 每天 09:00 之后调用它一次（同一天只成功发一次，失败最多每小时重试一次）。
+
+```
+python daily-report.py --config D:\napcat\guardian.config.json --dry-run   # 只看正文不发送
+```
+
+邮件正文长这样：
+
+```
+NapCat / AstrBot 日报告 — 2026-11-15 13:26
+==============================================
+
+统计区间：2026-11-14 00:00 起 24 小时
+
+【AstrBot token】
+  请求 4 次，合计 143,959 token
+  新增输入 100,054 · 命中缓存 42,752 · 输出 1,153
+  平均每次 35,989 token
+  消耗最多的会话：
+    yang:GroupMessage:... — 58,328
+
+【被踢记录】
+  [2026-11-15 12:38:37] KICKED | at=11-15 12:38:10 | log=... | quiet_before_kick=2 min
+  合计 2 次
+
+【AstrBot 看护】
+  僵死强杀重启 0 次
+
+【当前状态】
+  online · 本次登录 8 分钟 · 今日被踢 2 次
+```
+
+配置里可选 `pythonExe`（默认 `%LOCALAPPDATA%\Programs\Python\Python314\python.exe`）和 `astrbotDb`（AstrBot 的 `data_v4.db` 路径）。token 统计以只读方式打开 SQLite（`file:...?mode=ro`），不会和正在运行的 AstrBot 抢锁。
+
+---
+
 ## License
 
 [MIT License](LICENSE)

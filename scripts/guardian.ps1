@@ -25,6 +25,8 @@
 $QQ_UIN      = "YOUR_BOT_QQ"
 $NAPCAT_HOME = "D:\napcat"          # 部署根目录（guardian.ps1 / 日志 / 标志文件都放这里）
 $WEBUI_TOK   = ""                   # 留空 = 从 guardian.config.json 的 webuiToken 读取
+$PYTHON_EXE  = Join-Path $env:LOCALAPPDATA "Programs\Python\Python314\python.exe"
+                                            # 日报用；可在 guardian.config.json 里覆盖
 
 $HTTP_API   = "http://127.0.0.1:3000"
 $WEBUI_API  = "http://127.0.0.1:6099"
@@ -38,6 +40,11 @@ $KICK_LOG       = Join-Path $NAPCAT_HOME "kick.log"
 $HEARTBEAT_FILE = Join-Path $NAPCAT_HOME "guardian.heartbeat"
 $AB_FLAG        = Join-Path $NAPCAT_HOME "restart-astrbot.flag"
 $FORCE_FLAG     = Join-Path $NAPCAT_HOME "force-relaunch.flag"
+$REPORT_SCRIPT  = Join-Path $NAPCAT_HOME "daily-report.py"
+$REPORT_STAMP   = Join-Path $NAPCAT_HOME "last-report.txt"
+$REPORT_LOG     = Join-Path $NAPCAT_HOME "daily-report.log"
+$REPORT_ATTEMPT = Join-Path $NAPCAT_HOME "last-report-attempt.txt"
+$REPORT_HOUR    = 9
 # 机器人登录状态文件：给 qrsync 网页读，用来在页面上显示"需要扫码"提示
 $STATE_FILE = Join-Path $NAPCAT_HOME "qrsync\login-state.json"
 # 本次登录（= 当前票据）开始的时间，用于主动续期
@@ -72,6 +79,7 @@ if (Test-Path $CFG_PATH)
         if ($null -ne $gcfg.notifyToast) { $NOTIFY_TOAST = [bool]$gcfg.notifyToast }
         if ($gcfg.notifyEmail) { $NOTIFY_EMAIL = $gcfg.notifyEmail }
         if ($gcfg.notifyWebhook) { $NOTIFY_WEBHOOK = $gcfg.notifyWebhook }
+        if ($gcfg.pythonExe) { $PYTHON_EXE = [string]$gcfg.pythonExe }
     }
     catch { }
 }
@@ -1219,6 +1227,61 @@ if ($args -contains "-TestNotify")
     exit 0
 }
 
+# ---- 每日日报：把 token 消耗、被踢记录、看护重启汇总成一封邮件 ----
+# 为什么放在 guardian 里：注册新的计划任务需要管理员权限（会 Access denied），
+# 而"每天 09:00 之后发一次"这种逻辑用几十行脚本就能自洽。
+function Invoke-DailyReport
+{
+    param([string]$Today)
+
+    if (-not (Test-Path $REPORT_SCRIPT))
+    {
+        Write-Log "daily report skipped: $REPORT_SCRIPT not found"
+        return
+    }
+    if (-not (Test-Path $PYTHON_EXE))
+    {
+        Write-Log "daily report skipped: python not found at $PYTHON_EXE"
+        return
+    }
+
+    try
+    {
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName               = $PYTHON_EXE
+        $psi.Arguments              = '"' + $REPORT_SCRIPT + '" --config "' + $CFG_PATH + '"'
+        $psi.WorkingDirectory       = $NAPCAT_HOME
+        $psi.UseShellExecute        = $false
+        $psi.CreateNoWindow         = $true
+        $psi.WindowStyle            = 'Hidden'
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError  = $true
+
+        $proc = [System.Diagnostics.Process]::Start($psi)
+        $outTask = $proc.StandardOutput.ReadToEndAsync()
+        $errTask = $proc.StandardError.ReadToEndAsync()
+        if (-not $proc.WaitForExit(120000))
+        {
+            try { $proc.Kill() } catch { }
+            Write-Log "daily report timed out after 120s"
+            return
+        }
+        $out = ([string]$outTask.Result).Trim()
+        $err = ([string]$errTask.Result).Trim()
+        $stamp = "[" + (Get-Date).ToString('yyyy-MM-dd HH:mm:ss') + "] exit=" + $proc.ExitCode +
+                 " stdout=" + $out + " stderr=" + $err + $nl
+        [IO.File]::AppendAllText($REPORT_LOG, $stamp, [Text.UTF8Encoding]::new($false))
+        # 只有成功才记"今天已发"；失败留着下轮重试，但由 $REPORT_STAMP_ATTEMPT 限频。
+        Set-Content -Path $REPORT_ATTEMPT -Value ((Get-Date).ToString("yyyy-MM-ddTHH:mm:ss")) -NoNewline -Encoding ASCII
+
+        if ($proc.ExitCode -eq 0) { Set-Content -Path $REPORT_STAMP -Value $Today -NoNewline -Encoding ASCII; Write-Log "daily report sent ($out)" }
+        else { Write-Log ("daily report failed (exit " + $proc.ExitCode + "): " + $err) }
+    }
+    catch
+    {
+        Write-Log ("daily report error: " + $_.Exception.Message)
+    }
+}
 # ================= Main =================
 
 # ---- 单实例保护：互斥体 + 心跳 ----
@@ -1341,6 +1404,22 @@ $script:LastUnhealthyLog  = [DateTime]::MinValue
 
 while ($true)
 {
+    # ---- 每日 09:00 之后发一次日报 ----
+    if ((Get-Date).Hour -ge $REPORT_HOUR)
+    {
+        $todayStamp = (Get-Date).ToString('yyyy-MM-dd')
+        $lastReport = ''
+        if (Test-Path $REPORT_STAMP)
+        {
+            try { $lastReport = ([string](Get-Content $REPORT_STAMP -Raw)).Trim() } catch { }
+        }
+        $tooSoon = $false
+        if (Test-Path $REPORT_ATTEMPT)
+        {
+            try { $tooSoon = (((Get-Date) - [datetime]::ParseExact(([string](Get-Content $REPORT_ATTEMPT -Raw)).Trim(), "yyyy-MM-ddTHH:mm:ss", $null)).TotalMinutes -lt 60) } catch { }
+        }
+        if ($lastReport -ne $todayStamp -and -not $tooSoon) { Invoke-DailyReport $todayStamp }
+    }
     # ---- 手动强制重启开关：在 $NAPCAT_HOME 下新建 force-relaunch.flag 即可 ----
     # 用途：升级 NapCat、换版本、注入失效时，用"完整重启"（杀 QQ + 重新注入）
     # 而不是 RestartNapCat（只重启 worker，注入的 DLL 还是旧的）。
