@@ -224,6 +224,11 @@ async function tick(){
         const ok=ab.state==='online'&&ab.portOk&&ageMin<=5;
         parts.push('AstrBot '+(ok?'正常':'异常('+ab.state+', '+ageMin+' 分钟前)'));
       }
+      // 看护自己的心跳：metrics 每 20 秒重写一次，超过 3 分钟没更新就是看护挂了
+      // （2026-11-15 真实发生过：脚本丢了 BOM，进程静默退出，页面却还显示"在线"）。
+      const gm=Math.round((Date.now()-Date.parse(mt.at))/60000);
+      if(gm>3){ parts.push('⚠ 看护心跳超时('+gm+' 分钟)'); ml.style.color='#f87171'; }
+      else { ml.style.color=''; }
       ml.textContent=parts.join(' · ');
     } else { ml.textContent=''; }
     if(s.mtime && s.mtime!==last){ last=s.mtime; $('q').src='qrcode.png?k='+K+'&t='+s.mtime; }
