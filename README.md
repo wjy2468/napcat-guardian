@@ -158,6 +158,29 @@
 
 ---
 
+### 6. 诊断：这次为什么被踢？
+
+`scripts/kick-report.ps1` 只读 NapCat 日志，把每次真实 `[KickedOffLine]` 归到它所属的登录会话上：
+
+```
+Kicked         Log                          Session Uptime Ip
+11-13 12:24:49 2026-11-13_10-14-31.486.log      109 01:49 10.19.207.197
+11-13 14:38:27 2026-11-13_12-32-24.845.log      117 01:56 10.19.207.197
+...
+Session length at kick (minutes)
+  min 18  median 116.5  p90 121  max 137
+  64% of sessions ended within 15 min of the median
+  -> sessions cluster tightly around a fixed lifetime: suspect a ticket TTL.
+```
+
+看 **Session** 这一列就够了：
+
+- 集中在一两个值附近（如 109–121）→ 固定寿命，像票据 TTL，别去折腾网络和保活频率；
+- 忽长忽短、有 1–2 分钟就死的 → 登录被立刻拒绝，查设备指纹 / 同号多端；
+- 都很短且伴随 `1006514` → 那是"假在线"，不是被踢，看 `metrics.json` 的 `kicksToday` 对比。
+
+用法：`.\kick-report.ps1`、`.\kick-report.ps1 -Days 3`。只读，不影响运行中的机器人。
+
 ## NapCat 和 AstrBot 各需要改什么
 
 本仓库**只包含优化/稳定部分，不包含 NapCat 与 AstrBot 的基础安装**（假设你已经装好并能正常使用）。
@@ -224,6 +247,8 @@ napcat-guardian/
 │   ├── install_guardian.bat         # 自提权安装器（右键管理员运行）
 │   ├── network_fix.ps1              # 关闭 WiFi 网卡省电，网络更稳
 │   ├── start_bot.bat                # 可选：手动一键启动 AstrBot + NapCat
+│   ├── kick-report.ps1              # 诊断：统计每次被踢时的会话寿命（只读）
+│   ├── guardian.config.example.json  # 通知 / token 配置模板（真实文件不进 git）
 │   └── qrsync/                      # 可选：把二维码同步成网页，人在外面也能扫
 │       ├── qrsync.js                # 本地二维码网页（:8430，带访问密钥）
 │       ├── daemon.ps1               # 常驻守护：保活服务 + 公网隧道 + 端到端自检
