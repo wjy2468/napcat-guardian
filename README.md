@@ -632,7 +632,7 @@ python .\scripts\daily-report.py      # 只看不发：填好配置后它会发�
 
 `guardian.ps1` 负责救机器人，但它自己挂了没人知道——2026-11-15 就真发生过一次（编辑脚本时丢了 BOM，守护静默退出，网页却还显示"在线"）。
 
-所以 `astrbot_watchdog.ps1` 反过来盯它的心跳：读 `D:\napcat\guardian.heartbeat`，**超过 10 分钟没更新就发邮件**（用 `guardian.config.json` 里的 `notifyEmail`，一小时内最多一封）。
+所以 `astrbot_watchdog.ps1` 反过来盯它的心跳：读 `D:\napcat\guardian.heartbeat`，**超过 10 分钟没更新**就先 `Start-ScheduledTask NapCatGuardian` 尝试拉起（限频 30 分钟），再发邮件（用 `guardian.config.json` 里的 `notifyEmail`，一小时内最多一封）。2026-11-15 现场实测：任务停掉 + 心跳伪造 25 分钟前 → 5 秒内任务回到 Running、心跳恢复。
 
 ```
 # 单独跑一次检查（不发信也可看结论）

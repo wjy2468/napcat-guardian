@@ -5,7 +5,6 @@
 #   - 启动时若没在跑，也会立刻拉起（兼任开机自启）
 #   - 日志：D:\napcat\astrbot_watchdog.log（>2MB 轮转为 .1）
 #   - 停止：astrbot_watchdog.ps1 -Stop
-#   - 反向看护：guardian.ps1 的心跳超过 10 分钟没更新就发邮件告警（-CheckGuardian 可单独测）
 # ============================================================
 
 param(
@@ -38,6 +37,9 @@ $GUARDIAN_HB       = 'D:\napcat\guardian.heartbeat'
 $GUARDIAN_STALE_MIN = 10
 $GUARDIAN_ALERT_STAMP = Join-Path $PSScriptRoot 'guardian-alert.last'
 $GUARDIAN_ALERT_MIN   = 60
+$GUARDIAN_TASK        = 'NapCatGuardian'
+$GUARDIAN_RESTART_MIN = 30
+$GUARDIAN_RESTART_STAMP = Join-Path $PSScriptRoot 'guardian-restart.last'
 
 # ---------------- Logging ----------------
 function Write-Log($msg) {
@@ -139,7 +141,35 @@ function Test-GuardianHeartbeat {
         return $false
     }
 
-    Write-Log "反向看护：guardian 心跳已 $($hb.AgeMin) 分钟未更新（PID $($hb.Pid)，最后 $($hb.At.ToString('HH:mm:ss'))），发告警"
+    Write-Log "反向看护：guardian 心跳已 $($hb.AgeMin) 分钟未更新（PID $($hb.Pid)，最后 $($hb.At.ToString('HH:mm:ss'))）"
+
+    # 先尝试自动拉起计划任务（限频），拉不起来再靠邮件叫醒人。
+    $taskState = 'unknown'
+    try { $taskState = [string](Get-ScheduledTask -TaskName $GUARDIAN_TASK -ErrorAction Stop).State } catch { }
+    $lastRestart = $null
+    if (Test-Path $GUARDIAN_RESTART_STAMP) {
+        try {
+            $lastRestart = [datetime]::ParseExact((Get-Content -LiteralPath $GUARDIAN_RESTART_STAMP -Raw).Trim(),
+                'yyyy-MM-ddTHH:mm:ss', [Globalization.CultureInfo]::InvariantCulture)
+        } catch { $lastRestart = $null }
+    }
+    $canRestart = (-not $lastRestart) -or (((Get-Date) - $lastRestart).TotalMinutes -ge $GUARDIAN_RESTART_MIN)
+    if ($taskState -eq 'Running') {
+        Write-Log "反向看护：任务状态为 Running（可能卡在恢复流程里），不自动重启，只告警"
+    } elseif (-not $canRestart) {
+        Write-Log "反向看护：$GUARDIAN_RESTART_MIN 分钟内已尝试重启过，不再重复"
+    } else {
+        try {
+            Start-ScheduledTask -TaskName $GUARDIAN_TASK
+            [IO.File]::WriteAllText($GUARDIAN_RESTART_STAMP, (Get-Date).ToString('yyyy-MM-ddTHH:mm:ss'),
+                (New-Object System.Text.UTF8Encoding($false)))
+            Write-Log "反向看护：任务状态 $taskState，已尝试 Start-ScheduledTask $GUARDIAN_TASK"
+        } catch {
+            Write-Log "反向看护：重启任务失败 $($_.Exception.Message)"
+        }
+    }
+
+    Write-Log '反向看护：发告警邮件'
     $body = @"
 NapCat 看护进程（guardian.ps1）的心跳已经 $($hb.AgeMin) 分钟没有更新。
 
