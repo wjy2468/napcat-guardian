@@ -959,6 +959,7 @@ function Launch-NapCat
     #    minutes on a cold start, and giving up early forces an unnecessary scan.
     $waited = 0
     $lastQuick = 0
+    $earlyNotified = $false
     while ($waited -lt $LOGIN_WAIT_SEC)
     {
         Start-Sleep -Seconds 15
@@ -970,6 +971,31 @@ function Launch-NapCat
         {
             Write-Log ("  session expired: " + $ls.err)
             return "need_scan"
+        }
+        # 被踢之后票据大概率已经作废：只要二维码已经在刷新，就没必要让人干等完整的
+        # 8 分钟登录窗口才收到通知——120 秒还登不上就先把码推给用户，同时继续等缓存票。
+        if (-not $earlyNotified -and $script:KickSeen -and $waited -ge 120)
+        {
+            $qrFresh = $false
+            try
+            {
+                if (Test-Path $QR_FILE)
+                {
+                    $ageSecQr = ((Get-Date) - (Get-Item $QR_FILE).LastWriteTime).TotalSeconds
+                    $qrFresh = ($ageSecQr -lt 300)
+                }
+            }
+            catch { }
+            if ($qrFresh)
+            {
+                $earlyNotified = $true
+                Write-Log "  early needs-scan notice: QR is fresh, but the cached ticket has not logged in yet."
+                $nb = "机器人 QQ $QQ_UIN 被踢后 120 秒内没能用缓存票据登回，可能很快需要扫码。`n"
+                if ($QR_PAGE_URL) { $nb += "扫码页（自动换码）: $QR_PAGE_URL`n" }
+                $nb += "如果稍后自动登回，会再收到一条 recovered 通知。"
+                Send-Notification "need_scan" "NapCat bot may need a QR scan" $nb "default"
+                $null = Send-EmailNotification "NapCat 可能需要扫码（二维码见附件）" $nb $QR_FILE
+            }
         }
         if ($waited - $lastQuick -ge $QUICK_RETRY_SEC)
         {
