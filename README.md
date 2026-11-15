@@ -172,15 +172,26 @@
 `scripts/kick-report.ps1` 只读 NapCat 日志，把每次真实 `[KickedOffLine]` 归到它所属的登录会话上：
 
 ```
-Kicked         Log                          Session Uptime Ip
-11-13 12:24:49 2026-11-13_10-14-31.486.log      109 01:49 10.19.207.197
-11-13 14:38:27 2026-11-13_12-32-24.845.log      117 01:56 10.19.207.197
-...
+Kicked         Log                          Session Uptime DetectSec RecoverSec Path
+11-13 12:24:49 2026-11-13_10-14-31.486.log     109 01:49        31
+11-11 13:44:23 2026-11-11_13-18-25.420.log      26 00:25        46        394 staged
+11-15 12:38:10 2026-11-15_09-44-57.376.log     112 01:52        27        865 staged
+
+Recovery latency (kick -> online), matched for 4 of 14 kicks
+  min 322s  median 463.5s  max 865s
+  path=staged: 4 kick(s), median 463.5s
+
 Session length at kick (minutes)
   min 18  median 116.5  p90 121  max 137
   64% of sessions ended within 15 min of the median
   -> sessions cluster tightly around a fixed lifetime: suspect a ticket TTL.
 ```
+
+多出来的三列读法：
+
+- `DetectSec`：被踢到 guardian 开始恢复的秒数（≈ 轮询间隔，正常 20–50 秒）。
+- `RecoverSec`：被踢到重新在线（或扫码回来）的总秒数 —— **这一列才是"恢复快不快"的唯一指标**。
+- `Path`：`staged` = 旧的四阶段（A 宽限 → B 快速登录 → C 重启 worker → D 全量重启）；`fast` = 检测到踢线后直接跳到 D。用 `-GuardianLog` 指定 `guardian.log` 才能算出来。
 
 看 **Session** 这一列就够了：
 
