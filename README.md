@@ -144,7 +144,8 @@
 
 ```json
 {"at":"2026-11-15T13:12:57+08:00","state":"online","sessionMin":42,"kicksToday":2,
- "lastKick":"11-15 12:38:10","nextProbeAt":"13:22","probeMin":10,"uin":"YOUR_BOT_QQ"}
+ "lastKick":"11-15 12:38:10","nextProbeAt":"13:22","probeMin":10,
+ "lastRecoverSec":-1,"lastRecoverAt":"","uin":"YOUR_BOT_QQ"}
 ```
 
 | 字段 | 含义 |
@@ -153,8 +154,10 @@
 | `kicksToday` | 今天被踢次数（只统计 `kick.log` 里的真实 `[KickedOffLine]`，不含假在线） |
 | `lastKick` | 最近一次被踢的时间（NapCat 日志里的时间戳） |
 | `nextProbeAt` | 下一次保活探针的时间 |
+| `lastRecoverSec` | 上一次自动恢复耗时（秒）；`-1` 表示本次运行还没恢复过 |
+| `lastRecoverAt` | 上一次自动恢复完成的时刻 |
 
-配合 `qrsync` 的扫码页，页脚会显示"本次登录 N 分钟 · 今日被踢 M 次 · 下次探针 HH:MM"。
+配合 `qrsync` 的扫码页，页脚会显示"本次登录 N 分钟 · 今日被踢 M 次 · 上次恢复 N 秒 · 下次探针 HH:MM"。
 
 另外，`astrbot_watchdog.ps1` 每 30 秒写一次 `astrbot-state.json`：
 
@@ -420,6 +423,7 @@ Get-Content D:\napcat\guardian.log -Tail 20       # 应能看到 started / keep-
 
 ---
 
+恢复成功时的消息正文现在包含 **耗时 N 秒** 与 **会话时长 M 分钟**，扫码页页脚也会显示「上次恢复 N 秒」——这两个数字比"重启成功"本身更能说明策略好坏。
 ## 通知与告警
 
 守护脚本只在**状态跃迁**时推送（同一事件 30 分钟内去重），不会刷屏；三个触发点：需要扫码（附带扫码页链接）、熔断打开、恢复成功。

@@ -457,6 +457,8 @@ function Write-Metrics([datetime]$nextProbe)
             lastKick    = $lastKick
             nextProbeAt = $nextProbe.ToString("HH:mm")
             probeMin    = [int]($KEEPALIVE_MIN / 60)
+            lastRecoverSec = $script:LastRecoverSec
+            lastRecoverAt  = $script:LastRecoverAt
             uin         = $QQ_UIN
         }
         [IO.File]::WriteAllText($METRICS_FILE, ($obj | ConvertTo-Json -Compress),
@@ -489,6 +491,9 @@ function Add-KickLog([string]$detail)
 
 $script:LastState = ""
 $script:LastStateWrite = [DateTime]::MinValue
+# 最近一次自动恢复耗时（被踢/掉线 -> 重新在线），写进 metrics.json 供看板与复盘用。
+$script:LastRecoverSec = -1
+$script:LastRecoverAt = ""
 function Set-BotState([string]$state, [string]$note)
 {
     $nowSt = Get-Date
@@ -1698,10 +1703,13 @@ while ($true)
             {
                 "online"
                 {
-                    Write-Log ("Recovery attempt #" + $recoverCount + " succeeded.")
+                    $tookSec = [int]((Get-Date) - $lastRecover).TotalSeconds
+                    $script:LastRecoverSec = $tookSec
+                    $script:LastRecoverAt = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+                    Write-Log ("Recovery attempt #" + $recoverCount + " succeeded in " + $tookSec + "s.")
                     Set-BotState "online" "已登录"
                     Send-Notification "recovered" "NapCat bot recovered" `
-                        ("机器人 QQ $QQ_UIN 已自动恢复在线（无需扫码）。") "default"
+                        ("机器人 QQ $QQ_UIN 已自动恢复在线（无需扫码）。`n耗时: " + $tookSec + " 秒`n会话时长: " + (Get-SessionMinutes) + " 分钟") "default"
                     $recoverCount = 0
                 }
                 "need_scan"
