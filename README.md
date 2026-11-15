@@ -593,6 +593,28 @@ powershell -NoProfile -ExecutionPolicy Bypass -File D:\napcat\guardian.ps1 -Test
 
 ---
 
+### 11. 改恢复逻辑前先跑：`recovery-sim.ps1`
+
+`-SelfTest` 只能测单个函数；**分支顺序**类的 bug 它测不到（2026-11-15 真的踩了两次：被踢快速通道被僵尸态分支抢先、等扫码判据用码龄）。这个脚本把 `guardian.ps1` 的函数部分 dot-source 进来，把一切会动系统的函数换成桩，然后直接调 `Do-Recovery` 断言返回值与日志关键字。
+
+```powershell
+.\scripts\recovery-sim.ps1                      # 用同目录的 guardian.ps1
+.\scripts\recovery-sim.ps1 -Guardian D:\napcat\guardian.ps1
+```
+
+六个断言（5 个场景）：
+
+| 场景 | 期望 |
+|---|---|
+| 被踢（`loginError` 也含"失效"） | 返回 `online`，日志有 `Phase A/B/C skipped`，**没有** `Phase C: restart worker` |
+| 码在刷新、未登录、无错误 | 返回 `online`（扫到了）/ `need_scan`，日志有 `QR mode`，**没有** `Launch-NapCat` |
+| 僵尸态（无被踢行） | 日志有 `login session invalid`，走 worker 重启 |
+| WebUI 不可达 | 日志有 `launching directly` |
+| 被踢后票据真的废了 | 返回 `need_scan` |
+
+**它自己是验过的**：把快速通道改成不可达、把"码在刷新"判据改成恒假，模拟测试分别报 2 项 / 1 项 FAIL——也就是说这两个历史 bug 现在会被直接抓住。
+
+---
 ## 关键踩坑记录
 
 这些是我们实际验证过、确认"走不通"的方向，避免你重复踩坑：
