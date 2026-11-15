@@ -339,6 +339,39 @@ PS> .\scripts\experiment-compare.ps1 -Before D:\napcat\baseline.json -After D:\n
 - 其余一律 `no clear change`，此时应当把实验改的那一项改回去，别再叠加变量。
 
 快照是纯 JSON，也可以直接 `Export-Csv` 或喂给别的脚本。
+### 10. 装完自检：`smoke-test.ps1`
+
+`status.ps1` 回答"现在健不健康"，`smoke-test.ps1` 回答"装得对不对"——部署完、改完配置、换机器之后跑一次，九项一起看：
+
+```
+PS> .\scripts\smoke-test.ps1
+
+  NapCat 安装自检
+  ----------------------------------------------------------
+  [PASS] 配置文件          已加载 D:\napcat\guardian.config.json
+  [PASS] 计划任务          NapCatGuardian Running
+  [PASS] 看护心跳          PID 12256，0 分钟前
+  [PASS] metrics.json      state=online，sessionMin=29
+  [PASS] 本地扫码服务      state=used，bot=online
+  [PASS] 公网扫码页        HTTP 200，6335 B
+  [PASS] OneBot API        online=true good=True
+  [PASS] NapCat WebUI      token 鉴权成功
+  [PASS] AstrBot           online，pid 22512，6185 在听
+
+  [OK] 全部通过
+```
+
+- **退出码 = 失败项数**，可以直接接进脚本/任务里做门禁；
+- `-SkipPublic` 跳过公网检查（隧道没开时用），`-Json` 输出结构化结果；
+- `-Root` / `-Config` 指定非默认路径；
+- 全程只读：不发消息、不重启进程。
+
+| 状态 | 含义 |
+|---|---|
+| `PASS` | 该项正常 |
+| `WARN` | 能继续跑，但有东西没配好（例如没配通知通道、AstrBot 没起） |
+| `FAIL` | 这条链路是断的，必须处理（计入退出码） |
+| `SKIP` | 参数要求跳过，或缺少前置配置 |
 ## 目录结构
 
 ```
@@ -355,7 +388,8 @@ napcat-guardian/
 │   ├── kick-report.ps1
 ├── status.ps1
 ├── set-o3hookmode.ps1
-├── experiment-compare.ps1              # 诊断：统计每次被踢时的会话寿命（只读）
+├── experiment-compare.ps1
+├── smoke-test.ps1              # 诊断：统计每次被踢时的会话寿命（只读）
 │   ├── guardian.config.example.json  # 通知 / token 配置模板（真实文件不进 git）
 │   └── qrsync/                      # 可选：把二维码同步成网页，人在外面也能扫
 │       ├── qrsync.js                # 本地二维码网页（:8430，带访问密钥）
