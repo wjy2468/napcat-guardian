@@ -385,7 +385,7 @@ function Clear-NtfyFailure([string]$Path = "")
     if (Test-Path $Path) { Remove-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue }
 }
 
-function Send-Notification([string]$key, [string]$title, [string]$body, [string]$priority = "default")
+function Send-Notification([string]$key, [string]$title, [string]$body, [string]$priority = "default", [string]$attach = "")
 {
     $now = Get-Date
     # 同一类事件 30 分钟内只推一次，避免熔断期刷屏
@@ -430,7 +430,7 @@ function Send-Notification([string]$key, [string]$title, [string]$body, [string]
     }
     # ntfy.sh 在国内经常超时（2026-11-13 实测 07:34 推送超时），所以兜底通道必须独立可用：
     # 邮件（smtp.qq.com:465 可用）/ 企业微信、钉钉、飞书 webhook 均实测可达。
-    $null = Send-EmailNotification $title $body
+    $null = Send-EmailNotification $title $body $attach
     $null = Send-WebhookNotification $title $body
     if ($NOTIFY_TOAST) { Show-Toast $title $body }
 }
@@ -1057,8 +1057,7 @@ function Launch-NapCat
                 $nb = "机器人 QQ $QQ_UIN 被踢后 120 秒内没能用缓存票据登回，可能很快需要扫码。`n"
                 if ($QR_PAGE_URL) { $nb += "扫码页（自动换码）: $QR_PAGE_URL`n" }
                 $nb += "如果稍后自动登回，会再收到一条 recovered 通知。"
-                Send-Notification "need_scan" "NapCat bot may need a QR scan" $nb "default"
-                $null = Send-EmailNotification "NapCat 可能需要扫码（二维码见附件）" $nb $QR_FILE
+                Send-Notification "need_scan" "NapCat bot may need a QR scan" $nb "default" $QR_FILE
             }
         }
         if ($waited - $lastQuick -ge $QUICK_RETRY_SEC)
@@ -1281,9 +1280,8 @@ function Notify-Admin
     $body = "机器人 QQ $QQ_UIN 离线，自动登录失败，需要扫码。`n"
     if ($QR_PAGE_URL) { $body += "扫码页（自动换码）: $QR_PAGE_URL`n" }
     $body += "本机图片: $NAPCAT_DIR\cache\qrcode.png"
-    Send-Notification "need_scan" "NapCat bot needs QR scan" $body "high"
-    # Send-Notification 的邮件是不带附件的（去重后可能被抑制），这里单独补一封带图的。
-    $null = Send-EmailNotification "NapCat 需要扫码（二维码见附件）" $body $QR_FILE
+    # 邮件附件走同一个调用：既避免"两条邮件重复"，也保证被 30 分钟去重时不会只丢掉其中一封。
+    Send-Notification "need_scan" "NapCat bot needs QR scan" $body "high" $QR_FILE
     try { msg.exe * $body } catch {}
 }
 
