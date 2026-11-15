@@ -133,7 +133,21 @@ $botText = if ($online -eq $true) { '在线' } elseif ($online -eq $false) { '�
 Write-Host ('  机器人      ' + $botText + $(if ($good -eq $true) { '（good）' } else { '' })) -ForegroundColor $(if ($online -eq $true) { 'Green' } else { 'Yellow' })
 
 if ($metrics) {
-    $sess = if ($metrics.sessionMin -ge 0) { "$($metrics.sessionMin) 分钟" } else { '未登录' }
+    # 近几次被踢的中位会话时长：用来判断"这次登录还能撑多久"
+$kickMed = $null
+$kickLogPath = 'D:\napcat\kick.log'
+if (Test-Path -LiteralPath $kickLogPath) {
+    $vals = @(Get-Content -LiteralPath $kickLogPath -Encoding UTF8 |
+        ForEach-Object { [string]$_ } |
+        ForEach-Object { if ($_ -match 'session=(\d+) min') { [int]$Matches[1] } })
+    if ($vals.Count -gt 0) {
+        $sorted = @($vals | Sort-Object)
+        $n = $sorted.Count
+        $kickMed = if ($n % 2 -eq 1) { $sorted[[int](($n - 1) / 2)] } else { [math]::Round((($sorted[$n / 2 - 1] + $sorted[$n / 2]) / 2.0), 0) }
+    }
+}
+$sess = if ($metrics.sessionMin -ge 0) { "$($metrics.sessionMin) 分钟" } else { '未登录' }
+if ($kickMed -and $metrics.sessionMin -ge 0) { $sess += "（近 $($vals.Count) 次被踢中位 $kickMed 分钟）" }
     Write-Host ('  本次登录    ' + $sess)
     Write-Host ('  今日被踢    ' + $metrics.kicksToday + ' 次' + $(if ($metrics.lastKick) { '，最近 ' + $metrics.lastKick } else { '' }))
     if ($metrics.lastRecoverSec -gt 0) {
