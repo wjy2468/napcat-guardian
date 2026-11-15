@@ -1,4 +1,6 @@
-﻿# ============================================================
+﻿param([switch]$SelfTest)
+
+# ============================================================
 #  NapCat Guardian - Keep-alive + Auto-recovery
 #  - Keep-alive probe: the bot sends a message to ITSELF after 10 minutes
 #    of silence (nobody else is disturbed). Real protocol activity, and the
@@ -171,6 +173,8 @@ $KA_POOL = @(
 $LOG_MAX_BYTES = 4MB
 function Write-Log($msg)
 {
+    # 自检进程的日志只打到控制台，避免污染生产 guardian.log（否则会留下假记录）。
+    if ($script:SelfTestMode) { Write-Host ("[selftest] " + $msg); return }
     $line = "[{0}] {1}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $msg
     try
     {
@@ -472,6 +476,8 @@ function Get-NextKeepAliveDelay
 # ---------------- 被踢事件记录（供后续统计"多久被踢一次"） ----------------
 function Add-KickLog([string]$detail)
 {
+    # 自检模式下不往真实的 kick.log 里写假记录。
+    if ($script:SelfTestMode) { return }
     try
     {
         $line = "[{0}] {1}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $detail
@@ -1281,6 +1287,72 @@ function Invoke-DailyReport
     {
         Write-Log ("daily report error: " + $_.Exception.Message)
     }
+}
+# ---- 离线自检：-SelfTest ----
+# 用临时目录里的假日志验证两条检测链路（被踢检测 / 发送失败检测），
+# 全程不碰真实 NapCat 进程，也不写真实 kick.log。
+function Invoke-SelfTest
+{
+    $fail = 0
+    $tmp = Join-Path $env:TEMP ("napcat-selftest-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
+    New-Item -ItemType Directory -Path $tmp -Force | Out-Null
+
+    $savedDir = $NAP_LOG_DIR
+    $utf8 = [Text.UTF8Encoding]::new($false)
+    try
+    {
+        $script:NAP_LOG_DIR  = $tmp
+        $script:SelfTestMode = $true
+        $script:KickSeen     = $false
+        $script:SendFailAts.Clear()
+
+        $log = Join-Path $tmp '2026-11-15_10-00-00.000.log'
+        [IO.File]::AppendAllText($log, "11-15 10:00:00 [info] boot`n", $utf8)
+
+        # 第一次读：只接管文件，不把历史当成刚发生
+        $script:NapLogPath = $null; $script:NapLogPos = 0; $script:NapLogPrevWrite = $null
+        Read-NewNapCatLog
+        Write-Host ("[1] adopt existing log          KickSeen=" + $script:KickSeen)
+        if ($script:KickSeen) { Write-Host '    FAIL: replayed old history'; $fail++ }
+
+        # 追加一行"被踢"
+        [IO.File]::AppendAllText($log, "11-15 10:05:00 [error] lepori | [KickedOffLine] [下线通知] 你的账号当前登录已失效，请重新登录。`n", $utf8)
+        Read-NewNapCatLog
+        Write-Host ("[2] kick line                   KickSeen=" + $script:KickSeen)
+        if (-not $script:KickSeen) { Write-Host '    FAIL: kick not detected'; $fail++ }
+
+        # 追加一行"发送失败"
+        [IO.File]::AppendAllText($log, "11-15 10:06:00 [error] EventChecker Failed: NTEvent serviceAndMethod:NodeIKernelMsgService/sendMsg ... {`"result`": 1006514, `"errMsg`": `"网络连接异常!`"}`n", $utf8)
+        Read-NewNapCatLog
+        $broken = Test-SendBroken
+        Write-Host ("[3] send failure                SendFailSeq=" + $script:SendFailSeq + " Test-SendBroken=" + $broken)
+        if (-not $broken) { Write-Host '    FAIL: send failure not detected'; $fail++ }
+
+        # 探测窗口清空后应当回到 healthy
+        $script:SendFailAts.Clear()
+        $healthy = -not (Test-SendBroken)
+        Write-Host ("[4] window cleared              healthy=" + $healthy)
+        if (-not $healthy) { Write-Host '    FAIL: window did not expire'; $fail++ }
+
+        # 静默时长解析：被踢行应有 MM-DD HH:mm:ss 时间戳
+        $ts = $script:NapLastLineTs
+        Write-Host ("[5] last line timestamp         " + $(if ($ts) { $ts.ToString('MM-dd HH:mm:ss') } else { '<null>' }))
+        if (-not $ts) { Write-Host '    FAIL: timestamp not parsed'; $fail++ }
+    }
+    finally
+    {
+        $script:NAP_LOG_DIR  = $savedDir
+        $script:SelfTestMode = $false
+        Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    if ($fail -eq 0) { Write-Host 'SELFTEST PASSED (5 checks)' }
+    else { Write-Host ("SELFTEST FAILED (" + $fail + " problem(s))") }
+    return $fail
+}
+if ($SelfTest)
+{
+    exit (Invoke-SelfTest)
 }
 # ================= Main =================
 

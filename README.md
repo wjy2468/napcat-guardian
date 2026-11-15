@@ -569,6 +569,27 @@ NapCat / AstrBot 日报告 — 2026-11-15 13:26
 
 ---
 
+### 自检：`-SelfTest`
+
+改完检测逻辑不必等一次真实掉线来验证。`guardian.ps1` 支持离线自检，用临时目录里的假日志跑完整的两条检测链路，全程不碰 NapCat 进程、不写 `kick.log`、不污染生产日志：
+
+```
+powershell -NoProfile -ExecutionPolicy Bypass -File D:\napcat\guardian.ps1 -SelfTest
+```
+
+输出：
+
+```
+[1] adopt existing log          KickSeen=False
+[2] kick line                   KickSeen=True
+[3] send failure                SendFailSeq=1 Test-SendBroken=True
+[4] window cleared              healthy=True
+[5] last line timestamp         11-15 10:06:00
+SELFTEST PASSED (5 checks)
+```
+
+五项分别对应：历史日志不会被当成"刚刚被踢"、被踢行能被识别、发送失败计数生效、探测窗口过期后恢复健康、行首时间戳能解析（静默时长依赖它）。退出码 = 失败项数，便于放进任何检查脚本里。
+
 ## License
 
 [MIT License](LICENSE)
