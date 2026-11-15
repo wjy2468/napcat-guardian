@@ -192,7 +192,7 @@ PS> .\scripts\status.ps1
   看护        Running，心跳 0 分钟前（PID 12256）
   AstrBot     online，pid 22512，重启 0 次，0 分钟前
   登录状态    online — 已登录
-  扫码通道    ngrok / 正常，0 分钟前 · https://swampland-abacus-afar.ngrok-free.dev
+  扫码通道    ngrok / 正常，0 分钟前 · https://your-domain.ngrok-free.dev
 
   [OK] 一切正常
 ```
