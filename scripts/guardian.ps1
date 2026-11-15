@@ -1114,11 +1114,13 @@ function Do-Recovery
     # （2026-11-15 实测：RestartNapCat 不复用票据，仍停在二维码上，只能再全量重启）。
     if ($script:KickSeen)
     {
-        $script:KickSeen = $false
         $script:RecoveryCause = "kick"; $script:RecoveryPath = "fast"
         Write-Log "Phase A/B/C skipped: [KickedOffLine] - ticket revoked; only a full relaunch can reuse the cached token."
         Write-Log "Phase D: full relaunch ..."
         $rk = Launch-NapCat
+        # 清标记必须放在 Launch-NapCat 之后：它内部的登录等待会用 $script:KickSeen
+        # 决定是否在 +120 秒先推一条"可能要扫码"的通知。提前清掉，这条通知永远不发。
+        $script:KickSeen = $false
         if ($rk -eq "online") { Write-Log "  full relaunch succeeded."; return "online" }
         if ($rk -eq "need_scan") { Write-Log "  session expired after relaunch."; Notify-Admin; return "need_scan" }
         return "failed"
@@ -1409,7 +1411,9 @@ function Invoke-SelfTest
         {
             Write-Host '    FAIL: Test-QrModeWaiting logic is wrong'
             $fail++
-        }        # [7] 回归守卫：被踢快速通道必须排在"僵尸态"判断之前。
+        }
+
+        # [7] 回归守卫：被踢快速通道必须排在"僵尸态"判断之前。
         # 踢线时 loginError 里也含"失效"，若被 Case 2 抢先，快速通道就变成死代码。
         $src = [IO.File]::ReadAllText($PSCommandPath, [Text.UTF8Encoding]::new($true))
         $kickIdx = $src.IndexOf('if ($script:KickSeen)')
@@ -1419,7 +1423,20 @@ function Invoke-SelfTest
         {
             Write-Host '    FAIL: kick fast-path sits after the zombie branch'
             $fail++
-        }    }
+        }
+
+        # [8] 回归守卫：KickSeen 必须在 Launch-NapCat 之后才清。
+        # 提前清掉 → Launch-NapCat 里 +120s 的"可能要扫码"通知永远不发。
+        $branchIdx = $src.IndexOf('Phase A/B/C skipped')
+        $launchIdx = $src.IndexOf('$rk = Launch-NapCat')
+        if ($launchIdx -ge 0) { $resetIdx = $src.IndexOf('$script:KickSeen = $false', $launchIdx) } else { $resetIdx = -1 }
+        Write-Host ("[8] kick flag cleared after launch  branch=" + $branchIdx + " launch=" + $launchIdx + " reset=" + $resetIdx)
+        if ($branchIdx -lt 0 -or $launchIdx -lt 0 -or $resetIdx -lt $launchIdx)
+        {
+            Write-Host '    FAIL: KickSeen is cleared before Launch-NapCat (early notice would never fire)'
+            $fail++
+        }
+    }
     finally
     {
         $script:NAP_LOG_DIR  = $savedDir
@@ -1427,7 +1444,7 @@ function Invoke-SelfTest
         Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
     }
 
-    if ($fail -eq 0) { Write-Host 'SELFTEST PASSED (7 checks)' }
+    if ($fail -eq 0) { Write-Host 'SELFTEST PASSED (8 checks)' }
     else { Write-Host ("SELFTEST FAILED (" + $fail + " problem(s))") }
     return $fail
 }
