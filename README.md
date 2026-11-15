@@ -751,7 +751,7 @@ python daily-report.py --config D:\napcat\guardian.config.json --dry-run
 NapCat / AstrBot 日报告 — 2026-11-15 13:26
 ==============================================
 
-统计区间：2026-11-14 00:00 起 24 小时
+统计区间：2026-11-14 14:20 — 2026-11-15 14:20
 
 【AstrBot token】
   请求 4 次，合计 143,959 token

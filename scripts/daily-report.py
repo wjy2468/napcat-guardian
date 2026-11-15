@@ -89,7 +89,7 @@ def token_stats(db_path: str, since: float, until: float) -> dict:
     return out
 
 
-def read_kicks(path: str, since: dt.date) -> list[str]:
+def read_kicks(path: str, since: dt.datetime) -> list[str]:
     """Return kick.log lines dated on/after `since`."""
     lines: list[str] = []
     if not os.path.exists(path):
@@ -104,7 +104,7 @@ def read_kicks(path: str, since: dt.date) -> list[str]:
                     stamp = dt.datetime.strptime(line[1:20], fmt)
                 except ValueError:
                     continue
-                if stamp.date() >= since:
+                if stamp >= since:
                     lines.append(line)
                 break
     return lines
@@ -128,7 +128,7 @@ def kick_session_median(path: str) -> tuple[int, float | None]:
     med = vals[n // 2] if n % 2 else (vals[n // 2 - 1] + vals[n // 2]) / 2.0
     return n, float(med)
 
-def watchdog_restarts(path: str, since: dt.date) -> int:
+def watchdog_restarts(path: str, since: dt.datetime) -> int:
     """Count hard restarts performed by astrbot_watchdog."""
     if not os.path.exists(path):
         return 0
@@ -141,7 +141,7 @@ def watchdog_restarts(path: str, since: dt.date) -> int:
                 stamp = dt.datetime.strptime(line[1:20], "%Y-%m-%d %H:%M:%S")
             except ValueError:
                 continue
-            if stamp.date() >= since:
+            if stamp >= since:
                 count += 1
     return count
 
@@ -199,13 +199,12 @@ def fmt_int(value: int) -> str:
 
 
 def build_body(cfg: dict, now: dt.datetime) -> str:
-    since_day = now.date() - dt.timedelta(days=1)
-    start = dt.datetime.combine(since_day, dt.time.min)
+    start = now - dt.timedelta(hours=24)
     rows = [
         f"NapCat / AstrBot 日报告 — {now:%Y-%m-%d %H:%M}",
         "=" * 46,
         "",
-        f"统计区间：{start:%Y-%m-%d %H:%M} 起 24 小时",
+        f"统计区间：{start:%Y-%m-%d %H:%M} — {now:%Y-%m-%d %H:%M}",
         "",
         "【AstrBot token】",
     ]
@@ -226,7 +225,7 @@ def build_body(cfg: dict, now: dt.datetime) -> str:
             for umo, tok in stats["top"]:
                 rows.append(f"    {umo} — {fmt_int(tok)}")
 
-    kicks = read_kicks(cfg.get("kickLog", DEFAULT_KICK_LOG), since_day)
+    kicks = read_kicks(cfg.get("kickLog", DEFAULT_KICK_LOG), start)
     rows += ["", "【被踢记录】"]
     if kicks:
         rows += [f"  {line}" for line in kicks[-10:]]
@@ -237,7 +236,7 @@ def build_body(cfg: dict, now: dt.datetime) -> str:
     else:
         rows.append("  这段时间没有记录到 [KickedOffLine]。")
 
-    restarts = watchdog_restarts(cfg.get("watchdogLog", DEFAULT_WATCHDOG_LOG), since_day)
+    restarts = watchdog_restarts(cfg.get("watchdogLog", DEFAULT_WATCHDOG_LOG), start)
     rows += ["", "【AstrBot 看护】", f"  僵死强杀重启 {restarts} 次"]
 
     errs = astrbot_errors(cfg.get("astrbotLog", DEFAULT_ASTRBOT_LOG), start)
