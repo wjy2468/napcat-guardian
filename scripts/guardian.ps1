@@ -97,6 +97,7 @@ $KEEPALIVE_MAX       = 601
 $KEEPALIVE_IDLE_MIN  = 10     # 距最后一次真实收发 < 10 分钟就不发（有人聊天时探针没意义）
 $KEEPALIVE_NIGHT_FROM = 0     # 0/0：夜间也探。探针发给机器人自己，不打扰任何人，
 $KEEPALIVE_NIGHT_TO   = 0     # 而夜间恰恰是无人值守、最需要自动发现的时间段
+$QR_MODE_MAX_MIN     = 30    # NapCat 停在登录页超过这么久仍没人扫，才认为登录页卡死、做一次全量重启
 
 # Watchdog
 $CHECK_INTERVAL   = 20    # seconds between status checks
@@ -1031,6 +1032,15 @@ function Launch-NapCat
 
 # ---------------- Recovery: choose the right path ----------------
 # Returns $true if back online, $false if a manual QR scan is required.
+function Test-QrModeWaiting([int]$QrAgeSec, $LoginStatus)
+{
+    # "NapCat 正停在登录页等人扫码"的纯判定：码还在刷新 + 没登录 + 没有登录错误。
+    # 抽成函数是为了能在 -SelfTest 里跑（Do-Recovery 本身会重启进程，不能直接测）。
+    if ($null -eq $LoginStatus) { return $false }
+    if ($LoginStatus.login) { return $false }
+    if ($LoginStatus.err) { return $false }
+    return ($QrAgeSec -ge 0 -and $QrAgeSec -lt 180)
+}
 function Do-Recovery
 {
     $webUiUp = Test-WebUI
@@ -1040,15 +1050,26 @@ function Do-Recovery
     # 这时再走恢复流程（重启 worker / 全量重启）只会把码冲掉、让用户白扫一次。
     if (Test-Path $QR_FILE)
     {
-        $qrAgeMin = ((Get-Date) - (Get-Item $QR_FILE).LastWriteTime).TotalMinutes
+        $qrAgeSec = [int]((Get-Date) - (Get-Item $QR_FILE).LastWriteTime).TotalSeconds
         $lsq = Get-LoginStatus
-        if ($qrAgeMin -lt 10 -and $null -ne $lsq -and (-not $lsq.login) -and (-not $lsq.err))
+        # 判据是"码还在刷新"，不是"码有多新"：
+        # NapCat 停在登录页时会每 ~2 分钟重写一次 qrcode.png，只要 mtime 还很新，
+        # 就说明它正在等人扫；此时重启 worker / 全量重启只会把码冲掉，让用户白扫一次。
+        # （旧判据用"10 分钟内"，用户离开 12 分钟回来扫码就会失配。）
+        if (Test-QrModeWaiting $qrAgeSec $lsq)
         {
-            Write-Log ("a fresh QR code is already waiting (" + [int]$qrAgeMin + " min old) - not restarting; asking the user to scan.")
-            if (Wait-Scan) { return "online" }
-            return "need_scan"
+            if ($script:QrModeSince -eq [DateTime]::MinValue) { $script:QrModeSince = Get-Date }
+            $qrModeMin = [int]((Get-Date) - $script:QrModeSince).TotalMinutes
+            if ($qrModeMin -lt $QR_MODE_MAX_MIN)
+            {
+                Write-Log ("QR mode: code refreshed " + $qrAgeSec + "s ago (" + $qrModeMin + " min waiting) - waiting for a scan, not restarting.")
+                if (Wait-Scan) { return "online" }
+                return "need_scan"
+            }
+            Write-Log ("QR mode has lasted " + $qrModeMin + " min without a scan - login page may be stuck; one full relaunch.")
         }
     }
+    else { $script:QrModeSince = [DateTime]::MinValue }
     # ---- Case 1: WebUI unreachable -> NapCat is NOT running at all
     # (typical right after boot / after a crash). Launch it immediately;
     # waiting through the grace period here would waste minutes.
@@ -1367,12 +1388,23 @@ function Invoke-SelfTest
         Write-Host ("[5] last line timestamp         " + $(if ($ts) { $ts.ToString('MM-dd HH:mm:ss') } else { '<null>' }))
         if (-not $ts) { Write-Host '    FAIL: timestamp not parsed'; $fail++ }
 
-        # [6] 回归守卫：被踢快速通道必须排在"僵尸态"判断之前。
+        # [6] 扫码等待判定：码在刷新 + 未登录 + 无错误 → 应当等，不要重启
+        $qr1 = Test-QrModeWaiting 30  @{ login = $false; err = '' }
+        $qr2 = Test-QrModeWaiting 30  @{ login = $true;  err = '' }
+        $qr3 = Test-QrModeWaiting 30  @{ login = $false; err = '登录态已失效' }
+        $qr4 = Test-QrModeWaiting 300 @{ login = $false; err = '' }
+        $qr5 = Test-QrModeWaiting 30  $null
+        Write-Host ("[6] qr-mode waiting            fresh=" + $qr1 + " loggedin=" + $qr2 + " err=" + $qr3 + " stale=" + $qr4 + " null=" + $qr5)
+        if (-not ($qr1 -and (-not $qr2) -and (-not $qr3) -and (-not $qr4) -and (-not $qr5)))
+        {
+            Write-Host '    FAIL: Test-QrModeWaiting logic is wrong'
+            $fail++
+        }        # [7] 回归守卫：被踢快速通道必须排在"僵尸态"判断之前。
         # 踢线时 loginError 里也含"失效"，若被 Case 2 抢先，快速通道就变成死代码。
         $src = [IO.File]::ReadAllText($PSCommandPath, [Text.UTF8Encoding]::new($true))
         $kickIdx = $src.IndexOf('if ($script:KickSeen)')
         $zombieIdx = $src.IndexOf('# ---- Case 2:')
-        Write-Host ("[6] kick before zombie          kick=" + $kickIdx + " zombie=" + $zombieIdx)
+        Write-Host ("[7] kick before zombie          kick=" + $kickIdx + " zombie=" + $zombieIdx)
         if ($kickIdx -lt 0 -or $zombieIdx -lt 0 -or $kickIdx -gt $zombieIdx)
         {
             Write-Host '    FAIL: kick fast-path sits after the zombie branch'
@@ -1385,7 +1417,7 @@ function Invoke-SelfTest
         Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
     }
 
-    if ($fail -eq 0) { Write-Host 'SELFTEST PASSED (6 checks)' }
+    if ($fail -eq 0) { Write-Host 'SELFTEST PASSED (7 checks)' }
     else { Write-Host ("SELFTEST FAILED (" + $fail + " problem(s))") }
     return $fail
 }
@@ -1507,6 +1539,7 @@ $circuitUntil = [DateTime]::MinValue   # 熔断到期时间：此时间前不再
 $lastQuietLog = [DateTime]::MinValue   # 熔断/夜间提示的限频时间戳
 $nextKeepAlive = (Get-Date).AddSeconds((Get-NextKeepAliveDelay))
 $script:ForeignSince = [DateTime]::MinValue   # 桌面 QQ 已运行多久（超过上限才强行抢回机器人）
+$script:QrModeSince = [DateTime]::MinValue   # 从什么时候开始停在登录页等人扫码
 $script:LastResetAt  = [DateTime]::MinValue   # 上次"连接重置"的时间（发送失败探测限频）
 $script:KickSeen     = $false                 # 本掉线事件里是否已从日志确认 [KickedOffLine]
 $script:WasHealthy   = $null                  # 上一轮的健康状态（$null = 本进程还没判断过）（用于检测 false->true 跃迁，重置会话起点）
@@ -1634,6 +1667,7 @@ while ($true)
         $recoverCount = 0
         $circuitUntil = [DateTime]::MinValue
         $script:UnhealthyLogged = $false
+        $script:QrModeSince = [DateTime]::MinValue
     }
     else
     {
