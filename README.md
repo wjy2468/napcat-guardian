@@ -174,7 +174,32 @@
 
 ---
 
-### 6. 诊断：这次为什么被踢？
+### 6. 一眼看健康：`status.ps1`
+
+不想分别去看 `metrics.json` / `astrbot-state.json` / 计划任务 / OneBot API 时，跑这一个只读脚本就够了：
+
+```
+PS> .\scripts\status.ps1
+
+  NapCat 状态速览  2026-11-15 13:40:17
+  ----------------------------------------------------------
+  机器人      在线（good）
+  本次登录    24 分钟
+  今日被踢    2 次，最近 11-15 12:38:10
+  下次探针    13:47
+  看护        Running，心跳 0 分钟前（PID 12256）
+  AstrBot     online，pid 22512，重启 0 次，0 分钟前
+  登录状态    online — 已登录
+
+  [OK] 一切正常
+```
+
+- 退出码没用（始终 0），判定看输出最后一行的 `[OK]` / `[WARN]` / `[ERROR]`；
+- `-Json` 输出结构化结果，方便接监控；
+- `-Root` 指定 NapCat 根目录（默认 `D:\napcat`）。
+- 它**不发消息、不重启任何东西**，机器人正在等扫码时也可以放心跑。
+
+### 7. 诊断：这次为什么被踢？
 
 `scripts/kick-report.ps1` 只读 NapCat 日志，把每次真实 `[KickedOffLine]` 归到它所属的登录会话上：
 
@@ -274,7 +299,8 @@ napcat-guardian/
 │   ├── install_guardian.bat         # 自提权安装器（右键管理员运行）
 │   ├── network_fix.ps1              # 关闭 WiFi 网卡省电，网络更稳
 │   ├── start_bot.bat                # 可选：手动一键启动 AstrBot + NapCat
-│   ├── kick-report.ps1              # 诊断：统计每次被踢时的会话寿命（只读）
+│   ├── kick-report.ps1
+├── status.ps1              # 诊断：统计每次被踢时的会话寿命（只读）
 │   ├── guardian.config.example.json  # 通知 / token 配置模板（真实文件不进 git）
 │   └── qrsync/                      # 可选：把二维码同步成网页，人在外面也能扫
 │       ├── qrsync.js                # 本地二维码网页（:8430，带访问密钥）
