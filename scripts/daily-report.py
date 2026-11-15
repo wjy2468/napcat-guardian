@@ -22,6 +22,7 @@ import argparse
 import datetime as dt
 import json
 import os
+import re
 import smtplib
 import sqlite3
 import sys
@@ -108,6 +109,24 @@ def read_kicks(path: str, since: dt.date) -> list[str]:
                 break
     return lines
 
+
+def kick_session_median(path: str) -> tuple[int, float | None]:
+    """Median session length over the kicks that recorded `session=N min`."""
+    vals: list[int] = []
+    if not os.path.exists(path):
+        return 0, None
+    pat = re.compile(r"session=(\d+) min")
+    with open(path, "r", encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            m = pat.search(line)
+            if m:
+                vals.append(int(m.group(1)))
+    if not vals:
+        return 0, None
+    vals.sort()
+    n = len(vals)
+    med = vals[n // 2] if n % 2 else (vals[n // 2 - 1] + vals[n // 2]) / 2.0
+    return n, float(med)
 
 def watchdog_restarts(path: str, since: dt.date) -> int:
     """Count hard restarts performed by astrbot_watchdog."""
@@ -212,6 +231,9 @@ def build_body(cfg: dict, now: dt.datetime) -> str:
     if kicks:
         rows += [f"  {line}" for line in kicks[-10:]]
         rows.append(f"  合计 {len(kicks)} 次")
+        n_sess, med_sess = kick_session_median(cfg.get("kickLog", DEFAULT_KICK_LOG))
+        if med_sess is not None:
+            rows.append(f"  近 {n_sess} 次被踢的中位会话时长：{med_sess:.0f} 分钟")
     else:
         rows.append("  这段时间没有记录到 [KickedOffLine]。")
 
