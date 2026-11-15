@@ -648,6 +648,32 @@ healthy=True
 两个进程互相盯着，就不再存在"单点静默死亡"：guardian 死了 AstrBot 看护会喊，AstrBot 死了 guardian 会重启它。邮件里直接给出排查和恢复命令。
 
 ---
+### 14. 发布前一致性检查：`check-sync.ps1`
+
+仓库里的脚本是**脱敏过的副本**（`YOUR_BOT_QQ`、`C:\path\to\astrbot` 这类占位符），所以永远不可能和线上文件逐字节相同。但除了这些**故意不同**的行，其余必须一致——否则用户拿到的脚本和你测过的脚本不是同一个东西。
+
+`scripts\check-sync.ps1` 就是干这件事的：
+
+```powershell
+.\scripts\check-sync.ps1
+```
+
+```
+FILE                   STATUS       DETAIL
+---------------------- ------------ ----------------------------------------
+guardian.ps1           OK
+astrbot_watchdog.ps1   OK
+daemon.ps1             OK
+qrsync.js              OK
+
+[OK] repository scripts match production (after normalising placeholders)
+```
+
+- 归一化掉的东西：`YOUR_BOT_QQ` → 真实 QQ、`YOUR_WEBUI_TOKEN`、`$ASTRBOT_DIR =` / `$LOG_FILE =` 这两行（仓库版是自相对路径），以及每行行首的 UTF-8 BOM。
+- 其余任何差异都算 drift，并给出第一处不同的行号；退出码 = 不一致的文件数，可直接挂进 CI 或发布前脚本。
+- 提供 `-Root`（默认 `D:\napcat`）和 `-Json`，方便在测试树或另一台机器上跑。
+
+这个脚本是补一个真实的事故：第 22 轮改 `daemon.ps1` 加了隧道自愈，但仓库版的 `guardian.ps1` 落后了 56 行（缺隧道健康告警），是人工 diff 才发现的。
 ## 关键踩坑记录
 
 这些是我们实际验证过、确认"走不通"的方向，避免你重复踩坑：
