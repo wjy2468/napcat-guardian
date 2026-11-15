@@ -286,6 +286,22 @@ Session length at kick (minutes)
 
 ---
 
+### 8. 单变量实验：把 `o3HookMode` 改成 0
+
+社区诊断（[napcat-offline-diagnosis](https://github.com/TomoyoNatsume/dsh-qq-bridge/blob/main/docs/napcat-offline-diagnosis.md)，2026-09）给的唯一建议是**只改一个变量**：把 `config\napcat.json`（以及 `config\napcat_<QQ号>.json`）里的 `o3HookMode` 从 `1` 改成 `0`，其余一律不动，重启扫码后观察 24–48 小时。
+
+仓库里带了个小工具做这件事：
+
+```
+PS> .\scripts\set-o3hookmode.ps1 -Mode 0            # 只预演，不写文件
+PS> .\scripts\set-o3hookmode.ps1 -Mode 0 -Apply     # 真正写入（自动备份 .bak-o3hook-<时间戳>）
+PS> .\scripts\set-o3hookmode.ps1 -Mode 1 -Apply     # 实验结束，改回去
+```
+
+- 只替换 `o3HookMode` 这一个键的值，保留原文件的顺序、缩进和其余字段；写回前会再 `ConvertFrom-Json` 校验一次。
+- 改完必须重启 NapCat（会掉线一次，大概率要重新扫码）。
+- **判断标准是"每次登录能活多久"，不是"重启几次"**：实验前后各跑一次 `.\scripts\kick-report.ps1`，比较会话时长的中位数（本次基线：14 次被踢，median 116.5 分钟）。
+- 如果 24–48 小时后 median 没有明显变长，就 `-Mode 1 -Apply` 改回默认，别再折腾——反复改配置本身也是一种异常信号。
 ## 目录结构
 
 ```
@@ -300,7 +316,8 @@ napcat-guardian/
 │   ├── network_fix.ps1              # 关闭 WiFi 网卡省电，网络更稳
 │   ├── start_bot.bat                # 可选：手动一键启动 AstrBot + NapCat
 │   ├── kick-report.ps1
-├── status.ps1              # 诊断：统计每次被踢时的会话寿命（只读）
+├── status.ps1
+├── set-o3hookmode.ps1              # 诊断：统计每次被踢时的会话寿命（只读）
 │   ├── guardian.config.example.json  # 通知 / token 配置模板（真实文件不进 git）
 │   └── qrsync/                      # 可选：把二维码同步成网页，人在外面也能扫
 │       ├── qrsync.js                # 本地二维码网页（:8430，带访问密钥）

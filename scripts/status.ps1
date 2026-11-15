@@ -77,7 +77,12 @@ if (Test-Path -LiteralPath (Join-Path $Root 'kick.log')) {
 $verdict = 'OK'
 $reasons = New-Object System.Collections.ArrayList
 if ($task -ne 'Running') { $verdict = 'ERROR'; [void]$reasons.Add("看护任务未运行（$task）") }
-if (-not $hbAlive) { $verdict = 'ERROR'; [void]$reasons.Add('看护进程不存在（心跳里的 PID 已退出）') }
+if ($null -eq $hbPid) {
+    $verdict = 'ERROR'; [void]$reasons.Add("找不到心跳文件（$hbFile），看护可能从未启动")
+}
+elseif (-not $hbAlive) {
+    $verdict = 'ERROR'; [void]$reasons.Add("看护进程不存在（心跳里的 PID $hbPid 已退出）")
+}
 elseif ($null -ne $hbAgeMin -and $hbAgeMin -gt 3) { $verdict = 'ERROR'; [void]$reasons.Add("看护心跳 $hbAgeMin 分钟未更新") }
 if ($online -eq $false) {
     if ($verdict -ne 'ERROR') { $verdict = 'WARN' }
