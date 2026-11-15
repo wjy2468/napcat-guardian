@@ -32,6 +32,7 @@ DEFAULT_DB = r"C:\path\to\astrbot\data\data_v4.db"
 DEFAULT_KICK_LOG = r"D:\napcat\kick.log"
 DEFAULT_METRICS = r"D:\napcat\metrics.json"
 DEFAULT_WATCHDOG_LOG = r"D:\napcat\astrbot_watchdog.log"
+DEFAULT_ASTRBOT_LOG = r"C:\path\to\astrbot\data\logs\astrbot.log"
 
 
 def load_config(path: str) -> dict:
@@ -125,6 +126,46 @@ def watchdog_restarts(path: str, since: dt.date) -> int:
     return count
 
 
+def astrbot_errors(path: str, since: dt.datetime) -> dict:
+    """Count [ERRO lines in AstrBot's own log and keep the top messages.
+
+    只看错误行数量与「同一类错误的次数」，目的是发现"某插件每天报 300 次"这种趋势，
+    而不是把整份日志搬进邮件。
+    """
+    import re
+
+    if not os.path.exists(path):
+        return {"count": 0, "top": [], "path": path, "missing": True}
+
+    count = 0
+    buckets: dict[str, int] = {}
+    stamp_re = re.compile(r"^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})(?:\.\d+)?\]\s*")
+    noise_re = re.compile(r"\d+")
+    with open(path, "r", encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            if "[ERRO" not in line:
+                continue
+            match = stamp_re.match(line)
+            if not match:
+                continue
+            try:
+                stamp = dt.datetime.strptime(match.group(1), "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                continue
+            if stamp < since:
+                continue
+            count += 1
+            # 去掉时间戳、把数字归一化，让"同一类错误"落到同一个桶里
+            text = line[match.end():].strip()
+            text = noise_re.sub("N", text)
+            if len(text) > 110:
+                text = text[:110] + "…"
+            buckets[text] = buckets.get(text, 0) + 1
+
+    top = sorted(buckets.items(), key=lambda kv: kv[1], reverse=True)[:3]
+    return {"count": count, "top": top, "path": path, "missing": False}
+
+
 def load_json(path: str) -> dict:
     try:
         with open(path, "r", encoding="utf-8-sig") as fh:
@@ -175,6 +216,17 @@ def build_body(cfg: dict, now: dt.datetime) -> str:
 
     restarts = watchdog_restarts(cfg.get("watchdogLog", DEFAULT_WATCHDOG_LOG), since_day)
     rows += ["", "【AstrBot 看护】", f"  僵死强杀重启 {restarts} 次"]
+
+    errs = astrbot_errors(cfg.get("astrbotLog", DEFAULT_ASTRBOT_LOG), start)
+    rows += ["", "【AstrBot 错误】"]
+    if errs["missing"]:
+        rows.append(f"  日志不存在：{errs['path']}")
+    elif errs["count"] == 0:
+        rows.append("  24 小时内没有 [ERRO] 行。")
+    else:
+        rows.append(f"  {errs['count']} 条 [ERRO]，按次数排序：")
+        for text, hits in errs["top"]:
+            rows.append(f"    {hits}× {text}")
 
     metrics = load_json(cfg.get("metricsFile", DEFAULT_METRICS))
     if metrics:

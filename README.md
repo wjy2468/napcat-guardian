@@ -738,10 +738,11 @@ healthy=True
 
 ## 每日日报
 
-`scripts/daily-report.py` 把三个平时散落在日志里的数字汇总成一封邮件：AstrBot token 消耗、被踢记录、AstrBot 看护重启次数。`guardian.ps1` 每天 09:00 之后调用它一次（同一天只成功发一次，失败最多每小时重试一次）。
+`scripts/daily-report.py` 把平时散落在日志里的数字汇总成一封邮件：AstrBot token 消耗、被踢记录、AstrBot 看护重启次数，以及最近 24 小时出现次数最多的 `[ERRO]`（按消息归一化聚合，用于发现插件反复报错）。`guardian.ps1` 每天 09:00 之后调用它一次（同一天只成功发一次，失败最多每小时重试一次）。
 
 ```
-python daily-report.py --config D:\napcat\guardian.config.json --dry-run   # 只看正文不发送
+# 只看正文不发送（需配置 astrbotDb / astrbotLog 才能统计 token 与插件错误）
+python daily-report.py --config D:\napcat\guardian.config.json --dry-run
 ```
 
 邮件正文长这样：
@@ -766,11 +767,16 @@ NapCat / AstrBot 日报告 — 2026-11-15 13:26
 【AstrBot 看护】
   僵死强杀重启 0 次
 
+【AstrBot 错误】
+  26 条 [ERRO]，按次数排序：
+    5× [astrbot_plugin_self_learning] [ERRO] ... [DomainRouter] 连接 Pos…
+    5× [astrbot_plugin_livingmemory] [ERRO] ... 完整初始化流程失败: 无效的嵌入向量维度: N…
+
 【当前状态】
   online · 本次登录 8 分钟 · 今日被踢 2 次
 ```
 
-配置里可选 `pythonExe`（默认 `%LOCALAPPDATA%\Programs\Python\Python314\python.exe`）和 `astrbotDb`（AstrBot 的 `data_v4.db` 路径）。token 统计以只读方式打开 SQLite（`file:...?mode=ro`），不会和正在运行的 AstrBot 抢锁。
+配置里可选 `pythonExe`（默认 `%LOCALAPPDATA%\Programs\Python\Python314\python.exe`）、`astrbotDb`（AstrBot 的 `data_v4.db` 路径）和 `astrbotLog`（`data\logs\astrbot.log`，用于统计插件 `[ERRO]`）。token 统计以只读方式打开 SQLite（`file:...?mode=ro`），不会和正在运行的 AstrBot 抢锁。
 
 ---
 
