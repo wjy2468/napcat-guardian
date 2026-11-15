@@ -16,6 +16,7 @@
   "pythonExe": "%LOCALAPPDATA%\\Programs\\Python\\Python314\\python.exe",
   "astrbotDb": "C:\\path\\to\\astrbot\\data\\data_v4.db",
   "astrbotLog": "C:\\path\\to\\astrbot\\data\\logs\\astrbot.log",
+  "tunnelState": "D:\\napcat\\qrsync\\tunnel-state.json",
   "kickLog": "C:\\path\\to\\kick.log",
   "notifyWebhook": {
     "type": "custom",

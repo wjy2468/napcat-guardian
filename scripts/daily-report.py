@@ -33,6 +33,7 @@ DEFAULT_KICK_LOG = r"D:\napcat\kick.log"
 DEFAULT_METRICS = r"D:\napcat\metrics.json"
 DEFAULT_WATCHDOG_LOG = r"D:\napcat\astrbot_watchdog.log"
 DEFAULT_ASTRBOT_LOG = r"C:\path\to\astrbot\data\logs\astrbot.log"
+DEFAULT_TUNNEL_STATE = r"D:\napcat\qrsync\tunnel-state.json"
 
 
 def load_config(path: str) -> dict:
@@ -227,6 +228,19 @@ def build_body(cfg: dict, now: dt.datetime) -> str:
         rows.append(f"  {errs['count']} 条 [ERRO]，按次数排序：")
         for text, hits in errs["top"]:
             rows.append(f"    {hits}× {text}")
+
+    tunnel = load_json(cfg.get("tunnelState", DEFAULT_TUNNEL_STATE))
+    rows += ["", "【扫码通道】"]
+    if not tunnel:
+        rows.append("  没有读到 tunnel-state.json（qrsync 守护可能没在跑）。")
+    else:
+        ok_txt = "正常" if tunnel.get("ok") else "异常"
+        rows.append(
+            "  {p} / {ok}，连续失败 {n} 次 · {u}".format(
+                p=tunnel.get("provider", "?"), ok=ok_txt,
+                n=tunnel.get("failStreak", 0), u=tunnel.get("url", ""),
+            )
+        )
 
     metrics = load_json(cfg.get("metricsFile", DEFAULT_METRICS))
     if metrics:

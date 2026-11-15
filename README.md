@@ -772,11 +772,14 @@ NapCat / AstrBot 日报告 — 2026-11-15 13:26
     5× [astrbot_plugin_self_learning] [ERRO] ... [DomainRouter] 连接 Pos…
     5× [astrbot_plugin_livingmemory] [ERRO] ... 完整初始化流程失败: 无效的嵌入向量维度: N…
 
+【扫码通道】
+  ngrok / 正常，连续失败 0 次 · https://your-domain.ngrok-free.dev
+
 【当前状态】
   online · 本次登录 8 分钟 · 今日被踢 2 次
 ```
 
-配置里可选 `pythonExe`（默认 `%LOCALAPPDATA%\Programs\Python\Python314\python.exe`）、`astrbotDb`（AstrBot 的 `data_v4.db` 路径）和 `astrbotLog`（`data\logs\astrbot.log`，用于统计插件 `[ERRO]`）。token 统计以只读方式打开 SQLite（`file:...?mode=ro`），不会和正在运行的 AstrBot 抢锁。
+配置里可选 `pythonExe`（默认 `%LOCALAPPDATA%\Programs\Python\Python314\python.exe`）、`astrbotDb`（AstrBot 的 `data_v4.db` 路径）和 `astrbotLog`（`data\logs\astrbot.log`，用于统计插件 `[ERRO]`）与 `tunnelState`（qrsync 的 `tunnel-state.json`，用于报告扫码通道状态）。token 统计以只读方式打开 SQLite（`file:...?mode=ro`），不会和正在运行的 AstrBot 抢锁。
 
 ---
 
