@@ -188,6 +188,28 @@ if ($ab -and $ab.state -eq 'online' -and $listening) {
     Add-Result 'AstrBot' 'WARN' '6185 没有监听（AstrBot 没在跑？）'
 }
 
+# ---------- 10. 日报配置 ----------
+# 这组键缺失不会让看护出问题，但日报会静默退化成「读取失败」——所以单独查一次。
+$drDb    = [string]$cfg.astrbotDb
+$drLog   = [string]$cfg.astrbotLog
+$drTunnel = [string]$cfg.tunnelState
+$missingKeys = @()
+if (-not $drDb)     { $missingKeys += 'astrbotDb' }
+if (-not $drLog)    { $missingKeys += 'astrbotLog' }
+if (-not $drTunnel) { $missingKeys += 'tunnelState' }
+if ($missingKeys.Count -gt 0) {
+    Add-Result '日报配置' 'WARN' ('缺少 ' + ($missingKeys -join '/') + '，日报会显示「读取失败」')
+} else {
+    $bad = @()
+    if (-not (Test-Path -LiteralPath $drDb))     { $bad += 'astrbotDb' }
+    if (-not (Test-Path -LiteralPath $drLog))    { $bad += 'astrbotLog' }
+    if (-not (Test-Path -LiteralPath $drTunnel)) { $bad += 'tunnelState' }
+    if ($bad.Count -eq 0) {
+        Add-Result '日报配置' 'PASS' 'astrbotDb / astrbotLog / tunnelState 都在'
+    } else {
+        Add-Result '日报配置' 'WARN' ('路径不存在：' + ($bad -join '、'))
+    }
+}
 # ---------- 输出 ----------
 $fails = @($results | Where-Object { $_.Status -eq 'FAIL' })
 

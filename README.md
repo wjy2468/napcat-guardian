@@ -361,7 +361,7 @@ PS> .\scripts\experiment-compare.ps1 -Before D:\napcat\baseline.json -After D:\n
 `lastCause` ∈ `kick / zombie / sendfail / webui_down / qr_wait / offline`，`lastPath` ∈ `fast / staged / launch / worker / wait_scan`。日志里对应的成功行也带同样信息：`Recovery attempt #1 succeeded in 322s (cause=kick, path=fast).`
 ### 10. 装完自检：`smoke-test.ps1`
 
-`status.ps1` 回答"现在健不健康"，`smoke-test.ps1` 回答"装得对不对"——部署完、改完配置、换机器之后跑一次，九项一起看：
+`status.ps1` 回答"现在健不健康"，`smoke-test.ps1` 回答"装得对不对"——部署完、改完配置、换机器之后跑一次，十项一起看：
 
 ```
 PS> .\scripts\smoke-test.ps1
