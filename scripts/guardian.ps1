@@ -509,6 +509,38 @@ function Write-Metrics([datetime]$nextProbe)
                 }
             }
         }
+        # 恢复信息要跨进程存活：守护每重启一次，$script:LastRecoverSec 就回到 -1，
+        # 页面上的"上次恢复 N 秒"会凭空消失。这里从上一份 metrics.json 里继承。
+        $prevRecoverSec = -1
+        $prevRecoverAt = ""
+        $prevCause = ""
+        $prevPath = ""
+        if (Test-Path $METRICS_FILE)
+        {
+            try
+            {
+                $prev = Get-Content $METRICS_FILE -Raw -ErrorAction SilentlyContinue | ConvertFrom-Json
+                if ($prev -and $prev.lastRecoverSec -gt 0)
+                {
+                    $prevRecoverSec = [int]$prev.lastRecoverSec
+                    $prevRecoverAt = [string]$prev.lastRecoverAt
+                    $prevCause = [string]$prev.lastCause
+                    $prevPath = [string]$prev.lastPath
+                }
+            }
+            catch { }
+        }
+        $recoverSec = $script:LastRecoverSec
+        $recoverAt = $script:LastRecoverAt
+        $cause = $script:RecoveryCause
+        $path = $script:RecoveryPath
+        if ($recoverSec -lt 0 -and $prevRecoverSec -gt 0)
+        {
+            $recoverSec = $prevRecoverSec
+            $recoverAt = $prevRecoverAt
+            $cause = $prevCause
+            $path = $prevPath
+        }
         $obj = [ordered]@{
             at          = (Get-Date -Format "yyyy-MM-ddTHH:mm:sszzz")
             state       = $script:LastState
@@ -517,10 +549,10 @@ function Write-Metrics([datetime]$nextProbe)
             lastKick    = $lastKick
             nextProbeAt = $nextProbe.ToString("HH:mm")
             probeMin    = [int]($KEEPALIVE_MIN / 60)
-            lastRecoverSec = $script:LastRecoverSec
-            lastRecoverAt  = $script:LastRecoverAt
-            lastCause   = $script:RecoveryCause
-            lastPath    = $script:RecoveryPath
+            lastRecoverSec = $recoverSec
+            lastRecoverAt  = $recoverAt
+            lastCause   = $cause
+            lastPath    = $path
             uin         = $QQ_UIN
         }
         [IO.File]::WriteAllText($METRICS_FILE, ($obj | ConvertTo-Json -Compress),
