@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Summarise every real [KickedOffLine] event from NapCat logs.
 
@@ -23,6 +23,10 @@
 .PARAMETER Days
     Only show kicks from the last N days (0 = all).
 
+.PARAMETER Json
+    Print the same data as JSON instead of a table (use it to snapshot a baseline
+    before an experiment and feed experiment-compare.ps1).
+
 .PARAMETER GuardianLog
     guardian.log, used to measure how long the recovery actually took
     (kick -> recovery start -> logged in again).
@@ -36,7 +40,8 @@ param(
     [string]$LogDir = 'D:\napcat\NapCat.Shell\logs',
     [string]$KickLog = 'D:\napcat\kick.log',
     [string]$GuardianLog = 'D:\napcat\guardian.log',
-    [int]$Days = 0
+    [int]$Days = 0,
+    [switch]$Json
 )
 
 $ErrorActionPreference = 'Stop'
@@ -147,12 +152,6 @@ foreach ($f in (Get-ChildItem -LiteralPath $LogDir -Filter '*.log' -File -ErrorA
     })
 }
 
-if ($rows.Count -eq 0) {
-    Write-Host 'No [KickedOffLine] events found.' -ForegroundColor Yellow
-    exit 0
-}
-
-Write-Host ''
 function Get-Median([double[]]$v) {
     if ($v.Count -eq 0) { return 0 }
     $s = $v | Sort-Object
@@ -161,7 +160,47 @@ function Get-Median([double[]]$v) {
     return [Math]::Round(($s[$mid - 1] + $s[$mid]) / 2, 1)
 }
 
+if ($Json) {
+    $js = @($rows | ForEach-Object { [double]$_.Session } | Sort-Object)
+    $jcount = $js.Count
+    $jmedian = if ($jcount -gt 0) { Get-Median $js } else { 0 }
+    $jp90 = if ($jcount -eq 0) { 0 } elseif ($jcount -ge 10) { $js[[int][Math]::Floor($jcount * 0.9)] } else { $js[-1] }
+    $jnear = if ($jcount -gt 0) { @($js | Where-Object { [Math]::Abs($_ - $jmedian) -le 15 }).Count } else { 0 }
+    $perDay = [ordered]@{}
+    foreach ($g in ($rows | Group-Object { $_.Kicked.Substring(0, 5) } | Sort-Object Name)) {
+        $perDay[$g.Name] = $g.Count
+    }
+    [ordered]@{
+        at        = (Get-Date -Format 'yyyy-MM-ddTHH:mm:sszzz')
+        source    = $LogDir
+        count     = $jcount
+        median    = $jmedian
+        p90       = $jp90
+        min       = if ($jcount -gt 0) { $js[0] } else { 0 }
+        max       = if ($jcount -gt 0) { $js[-1] } else { 0 }
+        nearPct   = if ($jcount -gt 0) { [Math]::Round(100 * $jnear / $jcount) } else { 0 }
+        perDay    = $perDay
+        sessions  = @($rows | Sort-Object Kicked | ForEach-Object {
+            [ordered]@{
+                kicked     = $_.Kicked
+                log        = $_.Log
+                sessionMin = $_.Session
+                detectSec  = $_.DetectSec
+                recoverSec = $_.RecoverSec
+                path       = $_.Path
+                ip         = $_.Ip
+            }
+        })
+    } | ConvertTo-Json -Depth 5
+    return
+}
 
+if ($rows.Count -eq 0) {
+    Write-Host 'No [KickedOffLine] events found.' -ForegroundColor Yellow
+    exit 0
+}
+
+Write-Host ''
 Write-Host ('Kicked sessions: {0}' -f $rows.Count) -ForegroundColor Cyan
 $rows | Sort-Object Kicked |
     Select-Object Kicked, Log, Session, Uptime, DetectSec, RecoverSec, Path, Ip |

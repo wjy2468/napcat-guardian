@@ -302,6 +302,43 @@ PS> .\scripts\set-o3hookmode.ps1 -Mode 1 -Apply     # 实验结束，改回去
 - 改完必须重启 NapCat（会掉线一次，大概率要重新扫码）。
 - **判断标准是"每次登录能活多久"，不是"重启几次"**：实验前后各跑一次 `.\scripts\kick-report.ps1`，比较会话时长的中位数（本次基线：14 次被踢，median 116.5 分钟）。
 - 如果 24–48 小时后 median 没有明显变长，就 `-Mode 1 -Apply` 改回默认，别再折腾——反复改配置本身也是一种异常信号。
+### 9. 判断实验有没有用：`experiment-compare.ps1`
+
+「改完还是掉线」不等于改动无效。只要腾讯的票据策略不变，掉线本身几乎必然发生——该看的是**每次登录能活多久**。所以 `kick-report.ps1 -Json` 存快照、事后对比：
+
+```
+# 实验前
+PS> .\scripts\kick-report.ps1 -Json | Set-Content D:\napcat\baseline.json -Encoding UTF8
+
+# …… 改配置、重启、扫码，观察 24–48 小时 ……
+
+# 实验后
+PS> .\scripts\kick-report.ps1 -Json | Set-Content D:\napcat\after.json -Encoding UTF8
+PS> .\scripts\experiment-compare.ps1 -Before D:\napcat\baseline.json -After D:\napcat\after.json
+```
+
+输出是一张对照表加一句结论：
+
+```
+  被踢次数               14          11
+  会话中位数(分)      116.5       138.0
+  p90(分)               121         190
+  min/max             18/137      35/201
+  median±15占比          64%         45%
+  恢复耗时中位(秒)      463.5       148.0
+
+  中位数变化：+21.5 分钟（+18.5%）
+  [improved] 会话明显变长，这个改动值得保留。
+```
+
+判定规则是保守的，宁可说"没变化"：
+
+- 两侧样本各需 ≥ `-MinSamples`（默认 4）次被踢，否则只报「样本不足」；
+- 中位数提升 ≥ `-MinDeltaMin`（默认 15 分钟）**且** ≥ 15% → `improved`；
+- 下降同样的幅度 → `worse`；
+- 其余一律 `no clear change`，此时应当把实验改的那一项改回去，别再叠加变量。
+
+快照是纯 JSON，也可以直接 `Export-Csv` 或喂给别的脚本。
 ## 目录结构
 
 ```
@@ -317,7 +354,8 @@ napcat-guardian/
 │   ├── start_bot.bat                # 可选：手动一键启动 AstrBot + NapCat
 │   ├── kick-report.ps1
 ├── status.ps1
-├── set-o3hookmode.ps1              # 诊断：统计每次被踢时的会话寿命（只读）
+├── set-o3hookmode.ps1
+├── experiment-compare.ps1              # 诊断：统计每次被踢时的会话寿命（只读）
 │   ├── guardian.config.example.json  # 通知 / token 配置模板（真实文件不进 git）
 │   └── qrsync/                      # 可选：把二维码同步成网页，人在外面也能扫
 │       ├── qrsync.js                # 本地二维码网页（:8430，带访问密钥）
