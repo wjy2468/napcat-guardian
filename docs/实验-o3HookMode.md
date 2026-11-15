@@ -78,3 +78,31 @@ New-Item -ItemType File -Path D:\napcat\force-relaunch.flag -Force
 - 它不会让"掉线"消失——只是可能让会话活得更久；
 - 它不改变"假在线"（`1006514`）那一类，那条链路由发送失败探测 + 重启覆盖；
 - 如果 48 小时后仍是 `no clear change`，说明在这个账号/网络环境下这条路走不通，正确的结论是**接受定期扫码运维**，而不是继续加变量。
+
+## 这个开关在代码里到底做了什么
+
+`NapCat 4.18.42`（`napcat.mjs`，3,344,922 B）里 `o3HookMode` 只出现两处：
+
+- `35427` 行：配置 schema `o3HookMode: l.Number({ default: 0 })` —— **默认值是 0**，我们机器上是 1（安装时被改过或由 UI 写入）。
+- `87768` 行：`await n.init(r.getFullQQVersion(), s.o3HookMode === 1);` —— 它只是把 `true/false` 传给 `NativePacketClient.init()`。
+
+再往下看 `fke.init()`（`87171` 行起）：
+
+```js
+const a = this.MoeHooExport.exports.initHook?.(i, o, (c, u, d, p, f) => {
+  this.emitPacket(c, u, d, p, f);
+}, r);
+return a !== "success" ? (...) : (this.logger.log("[PacketHandler] 初始化成功"), !0);
+```
+
+也就是说：
+
+1. 不论 `o3HookMode` 是 0 还是 1，`initHook` 都会被调用，**包 hook 本身不会被关掉**——这印证了社区文档里那句"`o3HookMode=0` 不等于完全关闭包拦截"。
+2. 差别只在传给 native 的第四个参数（`r`）。该参数的含义在 `MoeHoo.win32.x64.node` 里，JS 侧无法进一步确认；从命名和默认值看，它是 hook 的"模式选择"而不是"开关"。
+3. 因为默认就是 0，切回 0 相当于回到发行版默认行为，风险主要是"某个依赖该模式的功能失效"（我们目前只用到发送/接收消息、群列表、登录状态，这些在默认模式下都是主路径）。
+
+所以这个实验的准确表述是：**"从非默认的 hook 模式切回默认模式，看会话寿命是否变长"**，而不是"关掉 hook 防检测"。
+
+## 如果切回 0 之后发送失败变多
+
+先看 `status.ps1` 的 `lastPath`/`lastCause` 和 `kick-report.ps1` 的输出；如果出现大量 `1006514 网络连接异常` 而 `[KickedOffLine]` 没变，说明是发送链路受影响而不是风控变化，直接按下面的回滚步骤退回 1。
