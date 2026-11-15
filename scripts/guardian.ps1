@@ -811,10 +811,23 @@ function Read-NewNapCatLog
             $ipTxt = "unknown"
             try
             {
-                $ipObj = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+                # 取"默认路由所在网卡"的地址：Get-NetIPAddress 的第一条经常是 Radmin/VPN 的虚拟网卡，
+                # 2026-11-15 14:28 那次被踢就记成了 26.15.34.205（Radmin），对排查毫无帮助。
+                $cands = @()
+                foreach ($r in (Get-NetRoute -DestinationPrefix "0.0.0.0/0" -ErrorAction SilentlyContinue |
+                                Sort-Object RouteMetric, ifMetric))
+                {
+                    $a = Get-NetIPAddress -AddressFamily IPv4 -InterfaceIndex $r.ifIndex -ErrorAction SilentlyContinue |
                          Where-Object { $_.IPAddress -notlike "169.254.*" -and $_.IPAddress -notlike "127.*" } |
                          Select-Object -First 1
-                if ($ipObj) { $ipTxt = [string]$ipObj.IPAddress }
+                    if ($a) { $cands += [string]$a.IPAddress }
+                }
+                if (-not $cands) {
+                    $cands = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+                             Where-Object { $_.IPAddress -notlike "169.254.*" -and $_.IPAddress -notlike "127.*" } |
+                             ForEach-Object { [string]$_.IPAddress }
+                }
+                if ($cands) { $ipTxt = $cands[0] }
             }
             catch { }
             Add-KickLog ("KICKED | at=" + $kickAt + " | log=" + $f.Name + " | session=" + $sessTxt +

@@ -708,6 +708,34 @@ checked: 14 ps1, 6 json, 1 js, 1 py
 3. `recovery-sim.ps1`（7 个恢复场景的行为断言）
 
 三步在本地都能跑，实测全 PASS。
+### 16. 掉线那一刻的证据：`incident-snapshot.ps1`
+
+出问题时值得看的东西散在 6 个状态文件、4 路日志里，而且几个小时后就会被新日志挤掉。这个脚本一次性把它们抓进一个文件夹：
+
+```powershell
+.\scripts\incident-snapshot.ps1
+```
+
+```
+snapshot: D:\napcat\incidents\20261115-143014
+  summary.txt                             495 B
+  metrics.json                            233 B
+  kick.log                                809 B
+  astrbot-state.json                      138 B
+  login-state.json                        113 B
+  tunnel-state.json                       131 B
+  guardian.log.tail.txt                 14220 B
+  astrbot_watchdog.log.tail.txt         11427 B
+  daemon.log.tail.txt                   13228 B
+  napcat-2026-11-15_13-08-58.343.log.tail.txt   6508 B
+  astrbot.log.tail.txt                  34483 B
+  tasks.txt                               325 B
+  15 file(s), all evidence in one place.
+```
+
+`summary.txt` 是"一眼看完"的那页：心跳与年龄、任务状态与 `LastTaskResult`、OneBot `get_status`、QQ 登录态（`isLogin` / `loginError`）、最近的 NapCat 日志文件及大小。
+
+参数：`-Root`（默认 `D:\napcat`）、`-Out`（默认 `incidents\<yyyyMMdd-HHmmss>`）、`-TailLines`（默认 200）、`-AstrBotDir`（默认从 `guardian.config.json` 的 `astrbotLog` 反推）。**全程只读**，不发邮件、不重启任何东西。
 ## 关键踩坑记录
 
 这些是我们实际验证过、确认"走不通"的方向，避免你重复踩坑：
