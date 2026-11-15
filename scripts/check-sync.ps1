@@ -62,10 +62,19 @@ function Get-ComparableLines([string]$Path) {
     # files written with UTF-8 BOM keep the BOM as U+FEFF on the first line
     $text = $text.TrimStart([char]0xFEFF)
     # normalise placeholders that the repository uses instead of real values
-    $text = $text -replace 'YOUR_BOT_QQ', '3888169425'
+    if ($script:RealUin) { $text = $text -replace [regex]::Escape($script:RealUin), 'YOUR_BOT_QQ' }
     $text = $text -replace 'YOUR_WEBUI_TOKEN', 'REDACTED'
     $text = $text -replace "`r`n", "`n"
     return @($text -split "`n" | Where-Object { -not (Test-Ignored $_) })
+}
+
+# Read the operator's real QQ number from the production guardian and mask it in
+# both files, so this script itself never contains a private value.
+$script:RealUin = ''
+$prodGuardian = Join-Path $Root 'guardian.ps1'
+if (Test-Path -LiteralPath $prodGuardian) {
+    $m = [regex]::Match([IO.File]::ReadAllText($prodGuardian, [Text.UTF8Encoding]::new($false)), '\$QQ_UIN\s*=\s*"([0-9]+)"')
+    if ($m.Success) { $script:RealUin = $m.Groups[1].Value }
 }
 
 $results = @()

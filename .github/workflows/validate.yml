@@ -1,0 +1,26 @@
+name: validate
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: windows-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Encoding, syntax, JSON, JS, Python, secret scan
+        shell: powershell
+        run: .\scripts\validate-repo.ps1
+
+      - name: Guardian self-test (9 checks)
+        shell: powershell
+        run: .\scripts\guardian.ps1 -SelfTest
+
+      - name: Recovery state machine simulation (7 scenarios)
+        shell: powershell
+        run: .\scripts\recovery-sim.ps1

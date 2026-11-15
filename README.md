@@ -674,6 +674,40 @@ qrsync.js              OK
 - 提供 `-Root`（默认 `D:\napcat`）和 `-Json`，方便在测试树或另一台机器上跑。
 
 这个脚本是补一个真实的事故：第 22 轮改 `daemon.ps1` 加了隧道自愈，但仓库版的 `guardian.ps1` 落后了 56 行（缺隧道健康告警），是人工 diff 才发现的。
+### 15. 每次提交都过一遍：`validate-repo.ps1`
+
+这个仓库踩过的每一类低级错误，现在都有对应的检查：
+
+| 检查 | 为什么存在 |
+|---|---|
+| `.ps1` 是否带 UTF-8 BOM（纯 ASCII 除外） | 没 BOM 的中文脚本，PS 5.1 按 GBK 解析直接炸（第 6、21 轮各栽一次） |
+| `Parser::ParseFile` 语法 | 语法错时计划任务只留 `LastTaskResult: 1`，日志一句都没有 |
+| `*.json` 可解析 | 示例配置坏了，用户复制过去 AstrBot 起不来 |
+| `node --check` | `qrsync.js` 语法错 = 扫码页和公网链接一起死 |
+| Python `compile()` | `daily-report.py` 语法错 = 日报静默不发作 |
+| 敏感串扫描 | 真实 QQ 号、token、邮箱、域名不许进公开仓库 |
+
+```powershell
+.\scripts\validate-repo.ps1
+```
+
+```
+checked: 14 ps1, 6 json, 1 js, 1 py
+  note: scripts\install_guardian.ps1 is ASCII-only, BOM not required
+  note: scripts\network_fix.ps1 is ASCII-only, BOM not required
+
+[OK] every check passed
+```
+
+失败时逐条列出 `[FAIL] 检查项 文件: 原因`，退出码 = 问题数。
+
+已经接进 GitHub Actions（`.github/workflows/validate.yml`），每次 push / PR 在 `windows-latest` 上跑三步：
+
+1. `validate-repo.ps1`（上面这些）
+2. `guardian.ps1 -SelfTest`（9 项源码级断言）
+3. `recovery-sim.ps1`（7 个恢复场景的行为断言）
+
+三步在本地都能跑，实测全 PASS。
 ## 关键踩坑记录
 
 这些是我们实际验证过、确认"走不通"的方向，避免你重复踩坑：
