@@ -57,8 +57,8 @@
         ┌───────────────────┼────────────────────┬───────────────────┐
         ▼                   ▼                    ▼                   ▼
   ① 保活探针         ② 在线判定           ③ 发送失败探测        ④ 分场景恢复
-  30–45 min 自聊   get_status.online    NapCat 日志"网络连接异常"  僵尸/断流/被踢
-  兼健康检查        + CheckLoginStatus   （假在线最多 50 分钟）    各走各的路
+  10 min 自聊       get_status.online    NapCat 日志"网络连接异常"  僵尸/断流/被踢
+  兼健康检查        + CheckLoginStatus   （最坏 10 分钟发现）      各走各的路
         │                   │                    │                   │
         └───────────────────┴────────┬───────────┴───────────────────┘
                                      ▼
@@ -77,12 +77,12 @@
 
 - 是一条真实的私聊消息，产生真实协议活动；
 - 只发给自己，**零打扰任何好友、任何群**；
-- 默认 **随机 30–45 分钟**一条。
+- 默认 **每 10 分钟**一条，但只在"距离上次真实收发已经满 10 分钟"时才发（有人聊天时探针没有意义）。
 
 **保活真正的作用已经变了**：它不再是"防静默被踢"的银弹（见上节实测），而是
 
 1. 维持账号的最低活跃度，避免长期零活动被判定异常；
-2. **兼做健康探针** —— 发给自己时 `retcode != 0` 就说明连接已经死了，比 `get_status` 早得多。
+2. **兼做健康探针** —— 这条消息是判断"假在线"的唯一可靠手段：连接死掉时 `retcode` 仍是 200，但响应体里 `status` 会变成 `failed`、`message` 里带 `1006514 网络连接异常`，同时 NapCat 日志落一行同样的错误。探针频率就是故障发现时间的上限，所以**固定 10 分钟**比随机 20–40 分钟更合适（实测随机间隔曾让一次假在线拖了 49 分钟才被发现）。
 
 ### 2. 看门狗：先判断场景，再对症恢复
 
@@ -132,6 +132,31 @@
 | **AstrBot** | 配好反向 WebSocket（`6199`）接收 NapCat；用附带的 `scripts/astrbot_watchdog.ps1` 以**普通权限**看护 | 可选但对无人值守很实用 |
 
 > AstrBot 由独立的 `astrbot_watchdog.ps1` 看护，**不由 guardian 启动**。原因：guardian 以最高权限运行，而 AstrBot 往往装了"电脑操控"类插件 —— 把它跑在管理员上下文里，等于把整台机器交给任何能给机器人发消息的人。这是有意为之的降权设计。
+
+### AstrBot 侧的两项加固（推荐）
+
+1. **WebUI 只监听本机**：`data/cmd_config.json` 里 `dashboard.host` 默认是 `0.0.0.0`，等于把管理面板暴露给整个局域网。改成 `127.0.0.1` 再重启 AstrBot（约 2 分钟）：
+   ```json
+   "dashboard": { "host": "127.0.0.1", "port": 6185 }
+   ```
+   注意 AstrBot 的 dashboard 有**自己的**用户名/密码（pbkdf2），别和 NapCat 的 token 混用。
+
+2. **给 livingmemory 配 embedding（否则启动噪音很大）**：不配时插件每次启动都会「等待 Embedding Provider … 已尝试 60 次」然后初始化失败，记忆向量功能等于残废。以 DashScope 为例，在 `provider_sources` 加一条：
+   ```json
+   {
+     "id": "dashscope_embedding",
+     "type": "dashscope_embedding",
+     "provider_type": "embedding",
+     "provider": "dashscope",
+     "embedding_api_key": "你的 key",
+     "embedding_api_base": "https://dashscope.aliyuncs.com/api/v1",
+     "embedding_model": "text-embedding-v4",
+     "embedding_dimensions": 1024,
+     "enable": true
+   }
+   ```
+   再在 `provider` 里加 `{"id":"dashscope/text-embedding-v4","provider_source_id":"dashscope_embedding","model":"text-embedding-v4","modalities":["embedding"],"enable":true}`，并把 `astrbot_plugin_livingmemory_config.json` 的 `provider_settings.embedding_provider_id` 指向它。
+   **坑**：只写 `embedding_model` 不够，必须显式写 `embedding_dimensions`（如 1024），否则插件报 `无效的嵌入向量维度: 0` 并初始化失败 —— `get_dim()` 只从配置里读这个字段，不会去探测模型。
 
 ## 桌面 QQ 与机器人共存
 
@@ -282,9 +307,9 @@ Get-Content D:\napcat\guardian.log -Tail 20       # 应能看到 started / keep-
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
-| `$KEEPALIVE_MIN` / `$KEEPALIVE_MAX` | 1200 / 2400 秒 | 保活间隔随机区间（20–40 分钟），长尾分布，少数拉长到几小时。实测踢线并非由静默触发，间隔不必很短；太频繁反而更像脚本 |
-| `$KEEPALIVE_IDLE_MIN` | 25 分钟 | 距最后一次**真实收发**不足这么久就不发保活 —— 空闲驱动，避免"天天整点自言自语" |
-| `$KEEPALIVE_NIGHT_FROM` / `_TO` | 1 / 7 | 凌晨 01:00–07:00 完全不发 |
+| `$KEEPALIVE_MIN` / `$KEEPALIVE_MAX` | 600 / 601 秒 | 保活探针固定 10 分钟一条（`Get-NextKeepAliveDelay` 直接返回 `$KEEPALIVE_MIN`）。探针频率 = 故障发现时间的上限，所以不再用长尾随机 |
+| `$KEEPALIVE_IDLE_MIN` | 10 分钟 | 距最后一次**真实收发**不足这么久就不发探针 —— 有人聊天时探针没意义，也避免"整点自言自语" |
+| `$KEEPALIVE_NIGHT_FROM` / `_TO` | 0 / 0 | 0/0 = 夜间照常探测。探针只发给自己、不打扰任何人，而夜间恰恰最需要自动发现 |
 | `$CHECK_INTERVAL` | 20 秒 | 看门狗检测间隔 |
 | `$OFFLINE_LIMIT` | 2 | 连续几次异常才判定需要恢复 |
 | `$RECOVER_COOLDOWN` | 300 秒 | 两次恢复动作之间的最小间隔 |
@@ -295,7 +320,7 @@ Get-Content D:\napcat\guardian.log -Tail 20       # 应能看到 started / keep-
 | `$LOGIN_WAIT_SEC` | 480 秒 | 全量重启后等缓存 token 登录的上限 |
 | `$WORKER_WAIT_SEC` | 240 秒 | `RestartNapCat` 后等缓存登录的上限 |
 | `$QUICK_RETRY_SEC` | 90 秒 | 等待登录期间补一次 `SetQuickLogin` 的间隔 |
-| `$SENDFAIL_WINDOW` / `$SENDFAIL_THRESHOLD` | 300 秒 / 1 | 发送失败探测：窗口内出现"网络连接异常"即判定可疑；随后由 `Confirm-SendBroken` 主动发一条探针复核（5 秒内再报错才算真死），既不误杀也不会漏 |
+| `$SENDFAIL_WINDOW` / `$SENDFAIL_THRESHOLD` | 300 秒 / 1 | 发送失败探测：窗口内出现一条"网络连接异常"即触发复核。`Confirm-SendBroken` 发一条探针，**直接看 OneBot 响应的 `status` 字段**（连接死时 HTTP 与 retcode 仍是 200，但 `status=failed`、`message` 带 `1006514`），不再靠等日志增量 |
 | `$SENDFAIL_COOLDOWN` | 600 秒 | 两次"连接重置"的最小间隔 |
 | `$FOREIGN_WAIT_MIN` | 30 分钟 | 检测到桌面 QQ 时，推迟恢复的最长时间 |
 | `$QQ_DATA_DIR` | 你的路径 | QQ 数据目录隔离，留空则不隔离 |
@@ -377,7 +402,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File D:\napcat\guardian.ps1 -Test
 
 ## 防风控 / 养号建议
 
-- **保活间隔不必很短**。实测踢线多发生在聊天中，把间隔放到 30–45 分钟既能维持活跃度，也不像固定周期的脚本。固定整点发消息最假。
+- **保活探针固定 10 分钟，但只在静默时发**。探针的价值是"发现假在线"，频率就是发现延迟的上限；但有人正在聊天时不必额外发，所以 `KEEPALIVE_IDLE_MIN=10` 拦一层。真正决定会不会被踢的，不是探针频率，而是**别让同一个号多端同时在线**。
 - **别让同一个 QQ 号在手机和电脑上"同时在线"**。手机 QQ 的「切换账号」不等于退出登录，小号会话仍在后台；服务端看到两端同时在线，就把 PC 侧判为"登录态已失效"——这是最常见的踢线原因。用完就在小号界面**退出登录**，而不是切回大号。
 - 机器人账号最好有正常使用痕迹（头像、昵称、少量真实好友/群），新号、小号更容易被风控。
 - 不要更新到最新版 QQ 后立即挂 NapCat；保持 NapCat 官方推荐的 QQ 版本，NapCat 本身也建议保持新版（老 Shell 会被判为外挂强制下线）。

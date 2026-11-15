@@ -1,36 +1,30 @@
 ﻿# ============================================================
-#  NapCat Guardian v3 - Keep-alive + Staged Auto-recovery
+#  NapCat Guardian - Keep-alive + Auto-recovery
+#  - Keep-alive probe: the bot sends a message to ITSELF after 10 minutes
+#    of silence (nobody else is disturbed). Real protocol activity, and the
+#    only reliable way to notice a "fake online" state, where get_status
+#    still says online but every send fails with 1006514 / 网络连接异常.
+#  - Watchdog: detects offline and recovers intelligently:
+#      * NapCat not running at all (e.g. after boot) -> launch it
+#        immediately, do NOT wait.
+#      * Was online, brief network blip -> wait for self-heal.
+#      * Saved session clearly expired -> pop up QR code at once,
+#        do NOT repeatedly kill/restart.
+#      * Send failures while "online" -> restart worker only, which usually
+#        logs back in with the cached token (no scan needed).
 #
-#  What it does
-#    * Keep-alive: the bot messages ITSELF (nobody else is disturbed),
-#      but only when the account has been idle for a while and never
-#      at night. Intervals are heavy-tailed (mostly 20-40 min,
-#      occasionally 1-6 h) so the traffic does not look like a metronome.
-#    * Detect three different failure shapes instead of guessing:
-#        - network-layer stall : NapCat log shows "网络连接异常 /
-#          EventChecker Failed" -> restart the worker only, keep QQ
-#          and the saved session, so usually NO QR scan is needed.
-#        - server-side kick    : "[KickedOffLine] 登录态已失效" ->
-#          quick-login; if the refresh token was revoked too, hand the
-#          QR code to the operator instead of looping restarts.
-#        - zombie session      : isLogin=true but loginError says the
-#          session expired -> restart the worker.
-#    * Safety valves: single recovery attempt, 120-minute circuit
-#      breaker, quiet hours 02:00-07:00, never kill the user's own
-#      desktop QQ, and a global mutex + heartbeat so two instances can
-#      never fight each other.
-#    * Alerts on state changes only (deduplicated): ntfy.sh -> SMTP
-#      e-mail -> WeCom/DingTalk/Feishu/ServerChan/PushPlus -> toast.
+#  Secrets (WebUI token, SMTP auth code, ntfy topic) live in
+#  guardian.config.json, which is git-ignored.
 #
-#  Run as a Scheduled Task with HIGHEST privileges
-#  (run scripts/install_guardian.bat as administrator once).
+#  Recommended to run as a Scheduled Task with HIGHEST privileges
+#  (run the installer .bat as administrator once).
 # ============================================================
 
 # ---------------- Configuration ----------------
 # 日常只需要改这三行：机器人 QQ 号、部署根目录、WebUI token。
 $QQ_UIN      = "YOUR_BOT_QQ"
 $NAPCAT_HOME = "D:\napcat"          # 部署根目录（guardian.ps1 / 日志 / 标志文件都放这里）
-$WEBUI_TOK   = "YOUR_WEBUI_TOKEN"
+$WEBUI_TOK   = ""                   # 留空 = 从 guardian.config.json 的 webuiToken 读取
 
 $HTTP_API   = "http://127.0.0.1:3000"
 $WEBUI_API  = "http://127.0.0.1:6099"
@@ -78,16 +72,17 @@ if (Test-Path $CFG_PATH)
     catch { }
 }
 
-# Keep-alive interval range (seconds) —— 空闲驱动 + 重尾分布。
-# 2026-11-12: 实测 6 次被踢全部发生在活跃对话中（最近一次距上条保活仅 4 分钟），
-# 说明"静默被踢"不是当前的主要掉线形态；保活只剩健康探针作用。
-# 因此改成：只有在"连续 KEEPALIVE_IDLE_MIN 分钟没有任何收发"时才发一条，
-# 且间隔按混合分布抽（多数 20-40 分钟，少数几小时），避免长期固定周期太像脚本。
-$KEEPALIVE_MIN       = 1200   # 短档下限 20 min
-$KEEPALIVE_MAX       = 2400   # 短档上限 40 min
-$KEEPALIVE_IDLE_MIN  = 25     # 距最后一次真实收发 < 25 分钟就不发
-$KEEPALIVE_NIGHT_FROM = 1     # 01:00-07:00 不发（夜里没人看，也不打扰）
-$KEEPALIVE_NIGHT_TO   = 7
+# Keep-alive interval (seconds) —— 2026-11-15 改为"固定 10 分钟健康探针"。
+# 理由：11-13 那次「假在线」从 16:38 一直拖到 17:27（49 分钟）才被发现，
+# 而 20-40 分钟的重尾随机间隔最坏要 40 分钟才探一次。保活本身防不住腾讯踢线
+# （6 次被踢全部发生在活跃对话中），它的真正价值是"发一条消息，看内核报不报错"，
+# 所以探针频率就等于故障发现的上限：固定 10 分钟 → 最坏 10 分钟发现，
+# 成本约 144 条自发消息/天，且这些消息不会进入 LLM（waking_check 拦截），不耗 token。
+$KEEPALIVE_MIN       = 600    # 固定 10 分钟（MAX 只用于 Get-Random 上界）
+$KEEPALIVE_MAX       = 601
+$KEEPALIVE_IDLE_MIN  = 10     # 距最后一次真实收发 < 10 分钟就不发（有人聊天时探针没意义）
+$KEEPALIVE_NIGHT_FROM = 0     # 0/0：夜间也探。探针发给机器人自己，不打扰任何人，
+$KEEPALIVE_NIGHT_TO   = 0     # 而夜间恰恰是无人值守、最需要自动发现的时间段
 
 # Watchdog
 $CHECK_INTERVAL   = 20    # seconds between status checks
@@ -353,10 +348,9 @@ function Get-NapCatLastActivity
 # ---------------- 下一次保活时间：重尾分布 ----------------
 function Get-NextKeepAliveDelay
 {
-    $r = Get-Random -Minimum 0 -Maximum 100
-    if ($r -lt 70)  { return (Get-Random -Min $KEEPALIVE_MIN -Max $KEEPALIVE_MAX) }        # 70%: 20-40 min
-    elseif ($r -lt 90) { return (Get-Random -Min 3600 -Max 7200) }                          # 20%: 1-2 h
-    else { return (Get-Random -Min 10800 -Max 21600) }                                      # 10%: 3-6 h
+    # 2026-11-15：固定间隔。原来按 70/20/10 抽 20-40min / 1-2h / 3-6h 的重尾分布，
+    # 真正的代价是"最长要等 6 小时才发现假在线"，而探针本身不花钱也不扰人。
+    return $KEEPALIVE_MIN
 }
 
 # ---------------- 被踢事件记录（供后续统计"多久被踢一次"） ----------------
@@ -441,11 +435,15 @@ function Get-Online
     {
         $r = Invoke-RestMethod -Uri "$HTTP_API/get_status" -Method Post `
                 -Body '{}' -ContentType "application/json" -TimeoutSec 10
+        if ($null -eq $r -or $null -eq $r.data) { return $false }
         return [bool]$r.data.online
     }
     catch
     {
-        return $null
+        # 2026-11-15：以前这里 return $null，日志里就写成 "online="（后面空白），
+        # 分不清是"探不到状态"还是"状态就是 false"。统一返回 $false，
+        # 探不到和掉线在决策上本来就等价（都要进入恢复流程）。
+        return $false
     }
 }
 
@@ -527,6 +525,7 @@ function Stop-NapCatOwned
 $script:NapLogPath  = $null
 $script:NapLogPos   = 0
 $script:NapLogPrevWrite = $null
+$script:NapLastLineTs = $null   # 最后一行日志自带的时间戳（算"被踢前安静多久"用）
 $script:SendFailAts = New-Object System.Collections.ArrayList
 # 单调递增计数：确认探针用它判断"这次探测有没有产生新的失败行"，
 # 比数 ArrayList 长度可靠（窗口裁剪会改变长度）。
@@ -585,6 +584,21 @@ function Read-NewNapCatLog
     $script:NapLogPrevWrite = $f.LastWriteTime
     foreach ($line in ($txt -split "`n"))
     {
+        # 2026-11-15：解析行首时间戳 "MM-DD HH:mm:ss"（NapCat 日志格式），
+        # 用来算"被踢前真正安静了多久"。旧算法用文件 mtime 差，日志换文件 /
+        # 缓冲刷新都会失真（实测 09:37 的被踢被记成 quiet 122min，实际只静了 23min）。
+        $lineTs = $null
+        if ($line -match '^\s*(\d{2})-(\d{2})\s+(\d{2}):(\d{2}):(\d{2})')
+        {
+            try
+            {
+                $lineTs = New-Object DateTime($now.Year, [int]$Matches[1], [int]$Matches[2],
+                                              [int]$Matches[3], [int]$Matches[4], [int]$Matches[5])
+                # 跨年：12-31 之后读到 01-01 会算出"未来"，往前退一年
+                if ($lineTs -gt $now.AddMinutes(1)) { $lineTs = $lineTs.AddYears(-1) }
+            }
+            catch { $lineTs = $null }
+        }
         if ($line -match '网络连接异常|EventChecker Failed')
         {
             [void]$script:SendFailAts.Add($now)
@@ -592,10 +606,17 @@ function Read-NewNapCatLog
         }
         if ($line -match 'KickedOffLine|下线通知')
         {
-            $gapTxt = if ($null -ne $gapMin) { "$gapMin min" } else { "unknown" }
-            Add-KickLog ("KICKED | log=" + $f.Name + " | quiet_before_kick=" + $gapTxt)
+            if ($null -ne $lineTs -and $null -ne $script:NapLastLineTs)
+            {
+                $gapTxt = "$([int](($lineTs - $script:NapLastLineTs).TotalMinutes)) min"
+            }
+            elseif ($null -ne $gapMin) { $gapTxt = "$gapMin min (file-level)" }
+            else { $gapTxt = "unknown" }
+            $kickAt = if ($lineTs) { $lineTs.ToString("MM-dd HH:mm:ss") } else { "unknown" }
+            Add-KickLog ("KICKED | at=" + $kickAt + " | log=" + $f.Name + " | quiet_before_kick=" + $gapTxt)
             Write-Log ("kick detected in NapCat log (quiet before kick: " + $gapTxt + ")")
         }
+        if ($null -ne $lineTs) { $script:NapLastLineTs = $lineTs }
     }
 }
 
@@ -614,13 +635,14 @@ function Test-SendBroken
 function Confirm-SendBroken
 {
     $seqBefore = $script:SendFailSeq
+    $resp = $null
     try
     {
         $probe = "{0}  link probe" -f (Get-Date -Format "HH:mm")
         $body  = @{ user_id = $QQ_UIN; message = $probe } | ConvertTo-Json
-        Invoke-RestMethod -Uri "$HTTP_API/send_private_msg" -Method Post `
+        $resp  = Invoke-RestMethod -Uri "$HTTP_API/send_private_msg" -Method Post `
             -Body ([System.Text.Encoding]::UTF8.GetBytes($body)) `
-            -ContentType "application/json; charset=utf-8" -TimeoutSec 10 | Out-Null
+            -ContentType "application/json; charset=utf-8" -TimeoutSec 10
     }
     catch
     {
@@ -628,9 +650,28 @@ function Confirm-SendBroken
         Write-Log ("  probe failed to dispatch: " + $_.Exception.Message)
         return $true
     }
-    Start-Sleep -Seconds 5
-    Read-NewNapCatLog
-    return ($script:SendFailSeq -gt $seqBefore)
+
+    # 2026-11-13 实测：长连接已死（"假在线"）时，OneBot 仍然 HTTP 200、
+    # retcode 200，但响应体是 status="failed"，message 里带
+    # "EventChecker Failed ... {\"result\": 1006514, \"errMsg\": \"网络连接异常!\"}"。
+    # 原来的做法是等 5 秒看日志增量，探针的失败行稍晚落盘就会被误判成"偶发"
+    # （17:27:17 那次就是这么漏掉的）。直接读响应 status 才是确定判据。
+    $probeStatus  = [string]$resp.status
+    $probeMessage = [string]$resp.message
+    if ($probeStatus -and $probeStatus -ne "ok")
+    {
+        Write-Log ("  probe rejected by kernel: status=" + $probeStatus +
+                   " msg=" + ($probeMessage -replace "\s+", " "))
+        return $true
+    }
+    if (-not $probeStatus)
+    {
+        # 响应里没有 status 字段（老版本/异常返回）时才回退到日志增量判断
+        Start-Sleep -Seconds 5
+        Read-NewNapCatLog
+        return ($script:SendFailSeq -gt $seqBefore)
+    }
+    return $false
 }
 
 # 连接复活：只重启 worker（不杀 QQ、不重新注入），走缓存 token 免扫码
@@ -1137,7 +1178,7 @@ while ($true)
         $recoverCount = 0
     }
 
-    # ---- Keep-alive timing：空闲驱动（只有静了 25 分钟以上才发一条） ----
+    # ---- Keep-alive timing：固定 10 分钟探针（静默满 10 分钟才发） ----
     if ((Get-Date) -ge $nextKeepAlive)
     {
         $nowKA   = Get-Date
@@ -1224,7 +1265,15 @@ while ($true)
     else
     {
         $offlineCount++
-        $why = if ($zombie) { "zombie login state: " + $lsNow.err } else { "online=" + $online }
+        $why = if ($zombie) {
+                   "zombie login state: " + $lsNow.err
+               }
+               elseif ($null -eq $lsNow) {
+                   "cannot read login status (NapCat WebUI unreachable?)"
+               }
+               else {
+                   "online=" + [string][bool]$online
+               }
         # 掉线期间每 20 秒就走到这里，而熔断可以开 2 小时 = 360 行重复日志。
         # 改成：每次掉线开头记一行，之后每 5 分钟记一行。
         $nowU = Get-Date
