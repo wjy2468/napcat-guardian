@@ -19,6 +19,10 @@ param([switch]$Stop)
 # 与公网扫码端到端探测都必须直连，避免因此误判掉线或反复重建隧道。
 [System.Net.WebRequest]::DefaultWebProxy = $null
 
+# PowerShell 5.1 默认可能只协商 TLS1.0/1.1，而 ngrok 等现代 HTTPS 端点要求 TLS1.2+，
+# 不显式打开会在长驻进程里以握手失败告终。SystemDefault 交给操作系统选最高可用版本。
+try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::SystemDefault } catch {}
+
 $ErrorActionPreference = 'Continue'
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $logFile = Join-Path $root 'daemon.log'
@@ -288,11 +292,17 @@ function Test-Public([string]$url) {
   try {
     # ngrok 免费版会给浏览器类请求塞一个 "You are about to visit..." 提示页，
     # 带上这个头才能拿到真实响应；没有它会被误判成"隧道挂了"而反复重建。
-    $r = Invoke-WebRequest -Uri "$url$healthPath?k=$key" -UseBasicParsing -TimeoutSec 15 `
+    # 注意：必须用 ${healthPath} 定界。PowerShell 双引号里 ? 可属于变量名，
+    # 写成 "$healthPath?k" 会被当成未定义变量 $healthPath?k（插值为空），URI 因此损坏。
+    $r = Invoke-WebRequest -Uri "$url${healthPath}?k=$key" -UseBasicParsing -TimeoutSec 15 `
       -Headers @{ 'ngrok-skip-browser-warning' = '1'; 'User-Agent' = 'qrsync-healthcheck' } -ErrorAction Stop
     if ($r.StatusCode -ne 200) { return $false }
     return ($r.Content -match '"state"|"ok"')
-  } catch { return $false }
+  } catch {
+    # 不再吞掉异常：把真实原因写进日志，下次自检失败可直接定位（TLS/代理/超时/HTTP码）。
+    Log ("公网自检异常: " + $_.Exception.Message) 'Yellow'
+    return $false
+  }
 }
 
 # ---------- 主循环 ----------
