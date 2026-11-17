@@ -39,6 +39,8 @@ param(
 )
 
 $ErrorActionPreference = 'Continue'
+# 本机代理配置可能把 localhost 请求错误地送往失效端口；自检全部直连。
+[System.Net.WebRequest]::DefaultWebProxy = $null
 if (-not $Config) { $Config = Join-Path $Root 'guardian.config.json' }
 
 $results = New-Object System.Collections.ArrayList

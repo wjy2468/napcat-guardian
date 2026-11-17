@@ -22,7 +22,7 @@
 |---|---|
 | 基线快照 | `D:\napcat\kick-baseline-20261115.json`（14 次，median 116.5） |
 | 机器人状态 | 在线（离线时做也行，反正都要扫码，但别在熔断期改） |
-| 当前配置 | 先跑一次 `.\scripts\set-o3hookmode.ps1 -Mode 0` 预演，确认改的是哪几个文件 |
+| 当前配置 | 先跑一次 `.\scripts\research\set-o3hookmode.ps1 -Mode 0` 预演，确认改的是哪几个文件 |
 | 时间点 | 建议在**下次被踢、你本来就要扫码**的时候做——这样实验的启动成本是 0 |
 
 ## 步骤
@@ -32,7 +32,7 @@
 Get-Content D:\napcat\kick-baseline-20261115.json -Raw | ConvertFrom-Json | Select-Object count, median
 
 # 1) 只改这一个键（三个 napcat*.json 里有该字段的都会被改）
-.\scripts\set-o3hookmode.ps1 -Mode 0 -Apply
+.\scripts\research\set-o3hookmode.ps1 -Mode 0 -Apply
 
 # 2) 重启 NapCat（会掉线一次）
 #    在机器人已经离线、正等扫码的时候做，反而不算额外损失
@@ -41,18 +41,18 @@ New-Item -ItemType File -Path D:\napcat\force-relaunch.flag -Force
 # 3) 扫码登录（网页扫码页 or 邮件里的二维码附件）
 
 # 4) 登录成功后确认新配置真的生效
-.\scripts\status.ps1
+.\scripts\ops\status.ps1
 ```
 
 ## 观察期怎么记
 
 - 什么**都不用做**，`guardian.ps1` 会自己维护 `session-since.txt` 和 `metrics.json`；
-- 想随时看："这次登录活了多久" → `.\scripts\status.ps1`；
+- 想随时看："这次登录活了多久" → `.\scripts\ops\status.ps1`；
 - 24–48 小时后取第二份快照并对比：
 
 ```powershell
-.\scripts\kick-report.ps1 -Json | Set-Content D:\napcat\after-o3hook.json -Encoding UTF8
-.\scripts\experiment-compare.ps1 -Before D:\napcat\kick-baseline-20261115.json -After D:\napcat\after-o3hook.json
+.\scripts\research\kick-report.ps1 -Json | Set-Content D:\napcat\after-o3hook.json -Encoding UTF8
+.\scripts\research\experiment-compare.ps1 -Before D:\napcat\kick-baseline-20261115.json -After D:\napcat\after-o3hook.json
 ```
 
 判据（`experiment-compare.ps1` 内置）：
@@ -60,14 +60,14 @@ New-Item -ItemType File -Path D:\napcat\force-relaunch.flag -Force
 | 输出 | 含义 | 动作 |
 |---|---|---|
 | `improved` | 中位数 ≥15 分钟且 ≥15% 变长 | 保留 `o3HookMode=0`，更新 README 基线 |
-| `worse` | 反向超过阈值 | `.\scripts\set-o3hookmode.ps1 -Mode 1 -Apply` 改回 |
+| `worse` | 反向超过阈值 | `.\scripts\research\set-o3hookmode.ps1 -Mode 1 -Apply` 改回 |
 | `no clear change` | 在噪声内 | 改回默认，别叠加变量 |
 | `样本不足` | 两侧各 <4 次被踢 | 继续观察，最多等到 7 天 |
 
 ## 回滚
 
 ```powershell
-.\scripts\set-o3hookmode.ps1 -Mode 1 -Apply
+.\scripts\research\set-o3hookmode.ps1 -Mode 1 -Apply
 # 然后同样用 force-relaunch.flag 重启一次
 ```
 

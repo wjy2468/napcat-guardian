@@ -3,7 +3,7 @@
   "webuiToken": "YOUR_WEBUI_TOKEN",
   "qrPageUrl": "https://your-domain.example/?k=YOUR_KEY",
   "ntfyTopic": "change-me-to-a-random-topic",
-  "notifyNtfy": true,
+  "notifyNtfy": false,
   "notifyToast": true,
   "notifyEmail": {
     "smtp": "smtp.qq.com",

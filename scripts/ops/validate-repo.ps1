@@ -26,11 +26,24 @@
     .\validate-repo.ps1 -Json
 #>
 param(
-    [string]$Root = (Split-Path $PSScriptRoot -Parent),
+    [string]$Root = "",
     [switch]$Json
 )
 
 $ErrorActionPreference = 'Stop'
+
+# 未显式指定时，从脚本目录向上找包含 .github 的目录作为仓库根。
+# 这样脚本放在 scripts\ops 或旧的 scripts 平铺位置都能正确定位。
+if (-not $Root) {
+    $d = $PSScriptRoot
+    while ($d -and -not (Test-Path (Join-Path $d '.github'))) {
+        $parent = Split-Path $d -Parent
+        if ($parent -eq $d) { break }
+        $d = $parent
+    }
+    if (-not (Test-Path (Join-Path $d '.github'))) { $d = Split-Path $PSScriptRoot -Parent }
+    $Root = $d
+}
 
 $failures = New-Object System.Collections.ArrayList
 $notes = New-Object System.Collections.ArrayList

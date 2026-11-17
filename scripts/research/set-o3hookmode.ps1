@@ -76,6 +76,6 @@ foreach ($f in $targets) {
 if ($Apply) {
     Write-Host ''
     Write-Host '下一步：重启 NapCat，重新扫码，并记录这次登录活了多久。' -ForegroundColor Yellow
-    Write-Host '  .\scripts\status.ps1          # 随时看本次登录已多久'
-    Write-Host '  .\scripts\kick-report.ps1     # 24–48 小时后看会话时长分布'
+    Write-Host '  .\scripts\ops\status.ps1          # 随时看本次登录已多久'
+    Write-Host '  .\scripts\research\kick-report.ps1     # 24–48 小时后看会话时长分布'
 }

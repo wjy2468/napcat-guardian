@@ -24,19 +24,31 @@
     .\check-sync.ps1 -Root 'D:\napcat' -Json
 #>
 param(
-    [string]$RepoRoot = (Split-Path $PSScriptRoot -Parent),
+    [string]$RepoRoot = "",
     [string]$Root = 'D:\napcat',
     [switch]$Json
 )
 
 $ErrorActionPreference = 'Stop'
 
+# 未显式指定时，从脚本目录向上找包含 .github 的目录作为仓库根（兼容脚本在不同层级）。
+if (-not $RepoRoot) {
+    $d = $PSScriptRoot
+    while ($d -and -not (Test-Path (Join-Path $d '.github'))) {
+        $parent = Split-Path $d -Parent
+        if ($parent -eq $d) { break }
+        $d = $parent
+    }
+    if (-not (Test-Path (Join-Path $d '.github'))) { $d = Split-Path $PSScriptRoot -Parent }
+    $RepoRoot = $d
+}
+
 # production path -> repository path
 $pairs = @(
-    @{ Name = 'guardian.ps1';         Prod = Join-Path $Root 'guardian.ps1';         Repo = Join-Path $RepoRoot 'scripts\guardian.ps1' }
-    @{ Name = 'astrbot_watchdog.ps1'; Prod = Join-Path $Root 'astrbot_watchdog.ps1'; Repo = Join-Path $RepoRoot 'scripts\astrbot_watchdog.ps1' }
-    @{ Name = 'daemon.ps1';           Prod = Join-Path $Root 'qrsync\daemon.ps1';    Repo = Join-Path $RepoRoot 'scripts\qrsync\daemon.ps1' }
-    @{ Name = 'qrsync.js';            Prod = Join-Path $Root 'qrsync\qrsync.js';    Repo = Join-Path $RepoRoot 'scripts\qrsync\qrsync.js' }
+    @{ Name = 'guardian.ps1';         Prod = Join-Path $Root 'guardian.ps1';         Repo = Join-Path $RepoRoot 'scripts\runtime\guardian.ps1' }
+    @{ Name = 'astrbot_watchdog.ps1'; Prod = Join-Path $Root 'astrbot_watchdog.ps1'; Repo = Join-Path $RepoRoot 'scripts\runtime\astrbot_watchdog.ps1' }
+    @{ Name = 'daemon.ps1';           Prod = Join-Path $Root 'qrsync\daemon.ps1';    Repo = Join-Path $RepoRoot 'scripts\runtime\qrsync\daemon.ps1' }
+    @{ Name = 'qrsync.js';            Prod = Join-Path $Root 'qrsync\qrsync.js';    Repo = Join-Path $RepoRoot 'scripts\runtime\qrsync\qrsync.js' }
 )
 
 # Lines that are expected to differ (placeholders and deliberately different paths).
@@ -47,6 +59,10 @@ $ignorePatterns = @(
     '\$ASTRBOT_DIR\s*='
     '\$LOG_FILE\s*='
     'C:\\path\\to\\astrbot'
+    # 仓库分层后 incident-snapshot 多一级 ..\ops 回退，生产平铺没有：这些行属有意差异，全部忽略。
+    '\$SNAPSHOT_SCRIPT\s*='
+    '# 先找脚本同目录'
+    '# 依次尝试：同目录'
 )
 
 function Test-Ignored([string]$Line) {

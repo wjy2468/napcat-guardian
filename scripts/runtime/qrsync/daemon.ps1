@@ -15,6 +15,9 @@
     powershell -ExecutionPolicy Bypass -File D:\napcat\qrsync\daemon.ps1 -Stop
 #>
 param([switch]$Stop)
+# 本机代理配置可能把 localhost 请求错误地送往失效端口；看护的本地 API
+# 与公网扫码端到端探测都必须直连，避免因此误判掉线或反复重建隧道。
+[System.Net.WebRequest]::DefaultWebProxy = $null
 
 $ErrorActionPreference = 'Continue'
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -113,6 +116,8 @@ $cfg = @{
   ngrok = @{ authToken = ''; domain = '' }
   cloudflare = @{ namedTunnel = '' }
   healthCheckSeconds = 60
+  publicPort = 0
+  publicHealthPath = '/status'
 }
 if (Test-Path $cfgPath) {
   try {
@@ -123,9 +128,15 @@ if (Test-Path $cfgPath) {
     if ($j.ngrok) { $cfg.ngrok = @{ authToken = "$($j.ngrok.authToken)"; domain = "$($j.ngrok.domain)" } }
     if ($j.cloudflare) { $cfg.cloudflare = @{ namedTunnel = "$($j.cloudflare.namedTunnel)" } }
     if ($j.healthCheckSeconds) { $cfg.healthCheckSeconds = [int]$j.healthCheckSeconds }
+    if ($j.publicPort) { $cfg.publicPort = [int]$j.publicPort }
+    if ($j.publicHealthPath) { $cfg.publicHealthPath = "$($j.publicHealthPath)" }
   } catch { Log "config.json 解析失败：$($_.Exception.Message)" 'Red' }
 }
 $port = [int]$cfg.port
+$tunnelPort = $port
+if ([int]$cfg.publicPort -gt 0) { $tunnelPort = [int]$cfg.publicPort }
+$healthPath = "$($cfg.publicHealthPath)"
+if (-not $healthPath) { $healthPath = '/status' }
 $qrFile = $cfg.qrFile
 $services = @($cfg.providers)
 $healthEvery = [Math]::Max(30, [int]$cfg.healthCheckSeconds)
@@ -196,7 +207,7 @@ function Start-Tunnel {
       elseif (-not $cfg.ngrok.domain) { Log '  ngrok 未配置固定域名，跳过' 'Yellow' }
       else {
         & $exe config add-authtoken $cfg.ngrok.authToken 2>&1 | Out-Null
-        $ngArgs = @('http', "--url=$($cfg.ngrok.domain)", "$port", '--log=stdout', '--log-format=logfmt', '--log-level=info')
+        $ngArgs = @('http', "--url=$($cfg.ngrok.domain)", "$tunnelPort", '--log=stdout', '--log-format=logfmt', '--log-level=info')
         $proc = Start-Process -FilePath $exe -ArgumentList $ngArgs `
           -WorkingDirectory $root -WindowStyle Hidden -PassThru `
           -RedirectStandardOutput $logPath -RedirectStandardError "$logPath.err"
@@ -237,7 +248,7 @@ function Start-Tunnel {
         if ($proc.HasExited) { Log '  named tunnel 启动失败' 'Yellow'; $proc = $null } else { $started = $true }
       }
       else {
-        $proc = Start-Process -FilePath $exe -ArgumentList @('tunnel', '--url', "http://127.0.0.1:$port", '--no-autoupdate', '--loglevel', 'info') `
+        $proc = Start-Process -FilePath $exe -ArgumentList @('tunnel', '--url', "http://127.0.0.1:$tunnelPort", '--no-autoupdate', '--loglevel', 'info') `
           -WorkingDirectory $root -WindowStyle Hidden -PassThru `
           -RedirectStandardOutput $logPath -RedirectStandardError "$logPath.err"
         $url = Read-Url $logPath 'https://[a-z0-9-]+\.trycloudflare\.com'
@@ -247,7 +258,7 @@ function Start-Tunnel {
       }
     }
     elseif ($name -eq 'localhost.run') {
-      $proc = Start-Process -FilePath $sshExe -ArgumentList @('-o', 'StrictHostKeyChecking=no', '-o', "UserKnownHostsFile=$root\known_hosts", '-o', 'ServerAliveInterval=30', '-o', 'ServerAliveCountMax=3', '-o', 'ExitOnForwardFailure=yes', '-R', "80:localhost:$port", 'nokey@localhost.run') `
+      $proc = Start-Process -FilePath $sshExe -ArgumentList @('-o', 'StrictHostKeyChecking=no', '-o', "UserKnownHostsFile=$root\known_hosts", '-o', 'ServerAliveInterval=30', '-o', 'ServerAliveCountMax=3', '-o', 'ExitOnForwardFailure=yes', '-R', "80:localhost:$tunnelPort", 'nokey@localhost.run') `
         -WorkingDirectory $root -WindowStyle Hidden -PassThru `
         -RedirectStandardOutput $logPath -RedirectStandardError "$logPath.err"
       $url = Read-Url $logPath 'https://[a-z0-9]+\.lhr\.life'
@@ -255,7 +266,7 @@ function Start-Tunnel {
       if ($url -and $proc) { $started = $true }
     }
     elseif ($name -eq 'pinggy') {
-      $proc = Start-Process -FilePath $sshExe -ArgumentList @('-p', '443', '-o', 'StrictHostKeyChecking=no', '-o', "UserKnownHostsFile=$root\known_hosts", '-o', 'ServerAliveInterval=30', '-o', 'ExitOnForwardFailure=yes', '-R0', "localhost:$port", 'a.pinggy.io') `
+      $proc = Start-Process -FilePath $sshExe -ArgumentList @('-p', '443', '-o', 'StrictHostKeyChecking=no', '-o', "UserKnownHostsFile=$root\known_hosts", '-o', 'ServerAliveInterval=30', '-o', 'ExitOnForwardFailure=yes', '-R0', "localhost:$tunnelPort", 'a.pinggy.io') `
         -WorkingDirectory $root -WindowStyle Hidden -PassThru `
         -RedirectStandardOutput $logPath -RedirectStandardError "$logPath.err"
       $url = Read-Url $logPath 'https?://[a-z0-9-]+\.(?:free\.)?pinggy\.link'
@@ -277,10 +288,10 @@ function Test-Public([string]$url) {
   try {
     # ngrok 免费版会给浏览器类请求塞一个 "You are about to visit..." 提示页，
     # 带上这个头才能拿到真实响应；没有它会被误判成"隧道挂了"而反复重建。
-    $r = Invoke-WebRequest -Uri "$url/status?k=$key" -UseBasicParsing -TimeoutSec 15 `
+    $r = Invoke-WebRequest -Uri "$url$healthPath?k=$key" -UseBasicParsing -TimeoutSec 15 `
       -Headers @{ 'ngrok-skip-browser-warning' = '1'; 'User-Agent' = 'qrsync-healthcheck' } -ErrorAction Stop
     if ($r.StatusCode -ne 200) { return $false }
-    return ($r.Content -match '"state"')
+    return ($r.Content -match '"state"|"ok"')
   } catch { return $false }
 }
 
@@ -345,8 +356,8 @@ while ($true) {
         $failStreak++
         Write-State $tunnel.name $false $tunnel.url $failStreak
         Log "公网自检失败（连续 $failStreak 次）" 'Yellow'
-        if ($failStreak -ge 2) {
-          Log '判定隧道假死，重建' 'Red'
+        if ($failStreak -ge 10) {
+          Log '判定隧道假死（连续 10 次），重建' 'Red'
           Stop-Proc $tunnel.proc
           $tunnel = $null
           $failStreak = 0

@@ -108,5 +108,5 @@ if ($delta -ge $MinDeltaMin -and $pct -ge 15) {
     Write-Host '  [worse] 会话反而更短了，建议把实验配置改回去。' -ForegroundColor Red
 } else {
     Write-Host '  [no clear change] 差异在噪声范围内，没有证据表明这个改动有效。' -ForegroundColor Yellow
-    Write-Host '  建议：把这次实验改动的那一项改回原值（o3HookMode 实验用 .\scripts\set-o3hookmode.ps1 -Mode 1 -Apply），别再叠加变量。' -ForegroundColor Gray
+    Write-Host '  建议：把这次实验改动的那一项改回原值（o3HookMode 实验用 .\scripts\research\set-o3hookmode.ps1 -Mode 1 -Apply），别再叠加变量。' -ForegroundColor Gray
 }

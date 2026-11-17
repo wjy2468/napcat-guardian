@@ -10,15 +10,18 @@
 #   断言它返回了什么、日志里出现了哪些关键字。
 #
 # 用法：
-#   powershell -ExecutionPolicy Bypass -File .\scripts\recovery-sim.ps1
-#   powershell -ExecutionPolicy Bypass -File .\scripts\recovery-sim.ps1 -Guardian D:\napcat\guardian.ps1
+#   powershell -ExecutionPolicy Bypass -File .\scripts\research\recovery-sim.ps1
+#   powershell -ExecutionPolicy Bypass -File .\scripts\research\recovery-sim.ps1 -Guardian D:\napcat\guardian.ps1
 param(
-    [string]$Guardian = (Join-Path $PSScriptRoot 'guardian.ps1'),
+    [string]$Guardian = (Join-Path $PSScriptRoot '..\runtime\guardian.ps1'),
     [switch]$VerboseLog
 )
 
 $ErrorActionPreference = 'Stop'
-if (-not (Test-Path $Guardian)) { throw "guardian.ps1 not found: $Guardian" }
+# 兼容旧的平铺放法：分层路径找不到时回退到同目录
+if (-not (Test-Path -LiteralPath $Guardian)) { $Guardian = Join-Path $PSScriptRoot 'guardian.ps1' }
+$Guardian = [IO.Path]::GetFullPath($Guardian)
+if (-not (Test-Path -LiteralPath $Guardian)) { throw "guardian.ps1 not found: $Guardian" }
 
 $src = [IO.File]::ReadAllText($Guardian, [Text.UTF8Encoding]::new($true))
 $marker = '# ================= Main ================='

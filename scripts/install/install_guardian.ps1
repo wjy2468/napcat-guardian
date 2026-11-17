@@ -1,12 +1,15 @@
-# Install guardian as a Scheduled Task (highest privileges, at logon).
+﻿# Install guardian as a Scheduled Task (highest privileges, at logon).
 # Must be run as administrator. The installer locates guardian.ps1 next
 # to itself, so you can put this folder anywhere.
 $ErrorActionPreference = "Stop"
 
 # Resolve paths relative to this script's folder.
 $scriptDir = $PSScriptRoot
-$guardian  = Join-Path $scriptDir "guardian.ps1"
-$log       = Join-Path $scriptDir "install_guardian.log"
+# guardian.ps1 在兄弟目录 runtime（仓库分层结构）；若同目录能找到则兼容旧的平铺放法。
+$guardian = Join-Path $scriptDir "..\runtime\guardian.ps1"
+if (-not (Test-Path -LiteralPath $guardian)) { $guardian = Join-Path $scriptDir "guardian.ps1" }
+$guardian = [IO.Path]::GetFullPath($guardian)
+$log      = Join-Path $scriptDir "install_guardian.log"
 "=== install guardian started ===" | Set-Content $log -Encoding ASCII
 
 # --- verify administrator ---
@@ -39,7 +42,7 @@ Register-ScheduledTask -TaskName "NapCatGuardian" -Action $action `
 
 # Note: guardian.ps1 starts NapCat (if not running) but deliberately does
 # NOT start AstrBot - AstrBot holds desktop-control plugins and must run as
-# a normal user. Use scripts\astrbot_watchdog.ps1 plus a Startup shortcut.
+# a normal user. Use scripts\runtime\astrbot_watchdog.ps1 plus a Startup shortcut.
 
 # --- Start the guardian now (no need to wait for the next logon) ---
 Start-ScheduledTask -TaskName "NapCatGuardian"

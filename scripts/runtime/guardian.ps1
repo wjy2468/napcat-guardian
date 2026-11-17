@@ -1,4 +1,7 @@
 ﻿param([switch]$SelfTest)
+# 本机代理配置可能把 localhost 请求错误地送往失效端口；看护的本地 API
+# 与公网扫码端到端探测都必须直连，避免因此误判掉线或反复重建隧道。
+[System.Net.WebRequest]::DefaultWebProxy = $null
 
 # ============================================================
 #  NapCat Guardian - Keep-alive + Auto-recovery
@@ -41,8 +44,9 @@ $QR_FILE        = Join-Path $NAPCAT_DIR  "cache\qrcode.png"
 $KICK_LOG       = Join-Path $NAPCAT_HOME "kick.log"
 
 # 掉线现场快照（incident-snapshot.ps1）：被踢时自动抓一次，10 分钟限频。
-# 先找脚本同目录，其次找部署根目录——两种放法都能用。
+# 依次尝试：同目录 -> 兄弟目录 ops（仓库分层结构）-> 部署根目录（生产平铺），三种放法都能用。
 $SNAPSHOT_SCRIPT = Join-Path $PSScriptRoot "incident-snapshot.ps1"
+if (-not (Test-Path $SNAPSHOT_SCRIPT)) { $SNAPSHOT_SCRIPT = Join-Path $PSScriptRoot "..\ops\incident-snapshot.ps1" }
 if (-not (Test-Path $SNAPSHOT_SCRIPT)) { $SNAPSHOT_SCRIPT = Join-Path $NAPCAT_HOME "incident-snapshot.ps1" }
 $SNAPSHOT_MIN_GAP_MIN = 10
 $script:LastSnapshot = [DateTime]::MinValue
@@ -171,9 +175,11 @@ $QQ_DATA_DIR = Join-Path $NAPCAT_HOME "qqdata"   # 留空 = 不隔离（与桌�
 # 2026-11-15 13:03 实测：按 100 分钟主动 RestartNapCat 续期，worker 起来后
 # 直接停在二维码（isLogin=False、无 loginError），票据并没有被复用 ——
 # 也就是说这条路会强制一次扫码，比被踢还糟。所以默认关闭（0）。
-# 若以后要重新试，把它改成 100 并接受"可能每次都要扫码"的代价。
+# 2026-11-17 实测 3 次主动续期只成功 1 次，且成功后新会话仅 85 分钟又被踢，
+# 无法突破服务端 TTL，失败的两次反而强制扫码。故停用（0 = 关闭），回到被动快速恢复。
+# 保留 $PROACTIVE_IDLE_MIN 与相关函数，后续若需要重新启用，把此值改回 105 即可。
 $PROACTIVE_REFRESH_MIN = 0
-$PROACTIVE_IDLE_MIN    = 5
+$PROACTIVE_IDLE_MIN    = 15
 
 # Random natural-looking keep-alive messages (sent to self)
 $KA_POOL = @(
@@ -636,6 +642,21 @@ function Get-WebUIHeaders
 }
 
 # ---------------- Is the WebUI reachable? ----------------
+function Test-QuickLoginAvailable {
+    try {
+        $h = Get-WebUIHeaders
+        $r = Invoke-RestMethod -Uri "$WEBUI_API/api/QQLogin/GetQuickLoginList" -Method Post `
+            -Headers $h -Body '{}' -ContentType 'application/json' -TimeoutSec 10
+        $items = @($r.data | ForEach-Object { [string]$_ })
+        $ok = $items -contains [string]$QQ_UIN
+        Write-Log ("quick-login ticket probe: " + ($(if($ok){'available'}else{'missing'})) +
+                   " (entries=" + $items.Count + ")")
+        return $ok
+    } catch {
+        Write-Log ("quick-login ticket probe failed: " + $_.Exception.Message)
+        return $false
+    }
+}
 function Test-WebUI
 {
     try { $null = Get-WebUIHeaders; return $true }
@@ -1765,6 +1786,16 @@ $script:WasHealthy   = $null                  # 上一轮的健康状态（$null
 $script:UnhealthyLogged   = $false            # 本次掉线是否已经记过 unhealthy 日志（限频用）
 $script:LastUnhealthyLog  = [DateTime]::MinValue
 
+# 最后一层保护：未被局部 catch 捕获的终止异常不能让看护进程静默退出。
+# 记录异常、刷新心跳后继续下一轮；计划任务重启仍作为第二层兜底。
+trap {
+    $e = $_.Exception
+    try { Write-Log ("UNHANDLED guardian exception: " + $e.Message) } catch { }
+    try { Write-Heartbeat } catch { }
+    try { Start-Sleep -Seconds 5 } catch { }
+    continue
+}
+
 while ($true)
 {
     # ---- 每日 09:00 之后发一次日报 ----
@@ -1917,7 +1948,7 @@ while ($true)
         Confirm-SessionSince
         $sessMin  = Get-SessionMinutes
         $idlePro  = ((Get-Date) - (Get-NapCatLastActivity)).TotalMinutes
-        if ($sessMin -ge $PROACTIVE_REFRESH_MIN -and $idlePro -ge $PROACTIVE_IDLE_MIN)
+        if ($sessMin -ge $PROACTIVE_REFRESH_MIN -and $idlePro -ge $PROACTIVE_IDLE_MIN -and (Test-QuickLoginAvailable))
         {
             Write-Log ("proactive session refresh: session " + $sessMin + " min old, idle " +
                        [int]$idlePro + " min - restarting worker to renew the ticket ...")

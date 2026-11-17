@@ -15,12 +15,12 @@ jobs:
 
       - name: Encoding, syntax, JSON, JS, Python, secret scan
         shell: powershell
-        run: .\scripts\validate-repo.ps1
+        run: .\scripts\ops\validate-repo.ps1
 
       - name: Guardian self-test (9 checks)
         shell: powershell
-        run: .\scripts\guardian.ps1 -SelfTest
+        run: .\scripts\runtime\guardian.ps1 -SelfTest
 
       - name: Recovery state machine simulation (7 scenarios)
         shell: powershell
-        run: .\scripts\recovery-sim.ps1
+        run: .\scripts\research\recovery-sim.ps1

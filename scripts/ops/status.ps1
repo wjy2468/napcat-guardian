@@ -23,7 +23,8 @@ param(
     [switch]$Json
 )
 
-$ErrorActionPreference = 'Continue'
+$ErrorActionPreference = 'Continue'# 本机代理配置可能把 localhost 请求错误地送往失效端口；状态检查全部直连。
+[System.Net.WebRequest]::DefaultWebProxy = $null
 
 function Read-JsonFile([string]$path) {
     if (-not (Test-Path -LiteralPath $path)) { return $null }

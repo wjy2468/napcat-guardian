@@ -181,7 +181,7 @@
 不想分别去看 `metrics.json` / `astrbot-state.json` / 计划任务 / OneBot API 时，跑这一个只读脚本就够了：
 
 ```
-PS> .\scripts\status.ps1
+PS> .\scripts\ops\status.ps1
 
   NapCat 状态速览  2026-11-15 13:40:17
   ----------------------------------------------------------
@@ -209,7 +209,7 @@ PS> .\scripts\status.ps1
 
 > 想要完整的数据与推论（14 次被踢的会话寿命分布、另一种"假在线"掉线的反例、以及还没被证伪的猜想），见 [`docs/掉线取证.md`](docs/掉线取证.md)。
 
-`scripts/kick-report.ps1` 只读 NapCat 日志，把每次真实 `[KickedOffLine]` 归到它所属的登录会话上：
+`scripts/research/kick-report.ps1` 只读 NapCat 日志，把每次真实 `[KickedOffLine]` 归到它所属的登录会话上：
 
 ```
 Kicked         Log                          Session Uptime DetectSec RecoverSec Path
@@ -248,7 +248,7 @@ Session length at kick (minutes)
 | 部分 | 为了本方案需要做什么 | 是否必须 |
 |------|----------------------|----------|
 | **NapCat** | 开启**本地 HTTP API**（`127.0.0.1:3000`），守护脚本靠它发保活、查状态；配置 `webui.json` 以使用快速登录/重启；建议打开 `fileLog`（发送失败探测要读日志） | **必须** |
-| **AstrBot** | 配好反向 WebSocket（`6199`）接收 NapCat；用附带的 `scripts/astrbot_watchdog.ps1` 以**普通权限**看护 | 可选但对无人值守很实用 |
+| **AstrBot** | 配好反向 WebSocket（`6199`）接收 NapCat；用附带的 `scripts/runtime/astrbot_watchdog.ps1` 以**普通权限**看护 | 可选但对无人值守很实用 |
 
 > AstrBot 由独立的 `astrbot_watchdog.ps1` 看护，**不由 guardian 启动**。原因：guardian 以最高权限运行，而 AstrBot 往往装了"电脑操控"类插件 —— 把它跑在管理员上下文里，等于把整台机器交给任何能给机器人发消息的人。这是有意为之的降权设计。
 
@@ -303,14 +303,14 @@ Session length at kick (minutes)
 仓库里带了个小工具做这件事：
 
 ```
-PS> .\scripts\set-o3hookmode.ps1 -Mode 0            # 只预演，不写文件
-PS> .\scripts\set-o3hookmode.ps1 -Mode 0 -Apply     # 真正写入（自动备份 .bak-o3hook-<时间戳>）
-PS> .\scripts\set-o3hookmode.ps1 -Mode 1 -Apply     # 实验结束，改回去
+PS> .\scripts\research\set-o3hookmode.ps1 -Mode 0            # 只预演，不写文件
+PS> .\scripts\research\set-o3hookmode.ps1 -Mode 0 -Apply     # 真正写入（自动备份 .bak-o3hook-<时间戳>）
+PS> .\scripts\research\set-o3hookmode.ps1 -Mode 1 -Apply     # 实验结束，改回去
 ```
 
 - 只替换 `o3HookMode` 这一个键的值，保留原文件的顺序、缩进和其余字段；写回前会再 `ConvertFrom-Json` 校验一次。
 - 改完必须重启 NapCat（会掉线一次，大概率要重新扫码）。
-- **判断标准是"每次登录能活多久"，不是"重启几次"**：实验前后各跑一次 `.\scripts\kick-report.ps1`，比较会话时长的中位数（本次基线：14 次被踢，median 116.5 分钟）。
+- **判断标准是"每次登录能活多久"，不是"重启几次"**：实验前后各跑一次 `.\scripts\research\kick-report.ps1`，比较会话时长的中位数（本次基线：14 次被踢，median 116.5 分钟）。
 - 如果 24–48 小时后 median 没有明显变长，就 `-Mode 1 -Apply` 改回默认，别再折腾——反复改配置本身也是一种异常信号。
 > 另一个相关细节（2026-11-15 修）：判断"是不是正等人扫码"看的是 **`qrcode.png` 还在不在刷新**（<180 秒），而不是"码是不是 10 分钟内生成的"。后者会让离开 12 分钟才回来扫码的人遇上"码被重启冲掉"。只有当这种状态持续 30 分钟仍没人扫，才认为登录页卡死、做一次全量重启（`$QR_MODE_MAX_MIN`）。
 > 注意一个曾经的实现坑（2026-11-15 修）：这条"被踢直接全量重启"的快速通道，最初放在"僵尸态"分支之后；而踢线时 `loginError` 里同样含"失效"，于是永远先命中僵尸态分支、快速通道成了死代码——`-SelfTest` 现在有第 6 项回归守卫检查这个顺序。
@@ -320,13 +320,13 @@ PS> .\scripts\set-o3hookmode.ps1 -Mode 1 -Apply     # 实验结束，改回去
 
 ```
 # 实验前
-PS> .\scripts\kick-report.ps1 -Json | Set-Content D:\napcat\baseline.json -Encoding UTF8
+PS> .\scripts\research\kick-report.ps1 -Json | Set-Content D:\napcat\baseline.json -Encoding UTF8
 
 # …… 改配置、重启、扫码，观察 24–48 小时 ……
 
 # 实验后
-PS> .\scripts\kick-report.ps1 -Json | Set-Content D:\napcat\after.json -Encoding UTF8
-PS> .\scripts\experiment-compare.ps1 -Before D:\napcat\baseline.json -After D:\napcat\after.json
+PS> .\scripts\research\kick-report.ps1 -Json | Set-Content D:\napcat\after.json -Encoding UTF8
+PS> .\scripts\research\experiment-compare.ps1 -Before D:\napcat\baseline.json -After D:\napcat\after.json
 ```
 
 输出是一张对照表加一句结论：
@@ -364,7 +364,7 @@ PS> .\scripts\experiment-compare.ps1 -Before D:\napcat\baseline.json -After D:\n
 `status.ps1` 回答"现在健不健康"，`smoke-test.ps1` 回答"装得对不对"——部署完、改完配置、换机器之后跑一次，十项一起看：
 
 ```
-PS> .\scripts\smoke-test.ps1
+PS> .\scripts\ops\smoke-test.ps1
 
   NapCat 安装自检
   ----------------------------------------------------------
@@ -399,24 +399,34 @@ napcat-guardian/
 ├── README.md                        # 本文件
 ├── LICENSE                          # MIT 协议
 ├── scripts/
-│   ├── guardian.ps1                 # 核心：保活 + 看门狗 + 分场景恢复（最高权限）
-│   ├── astrbot_watchdog.ps1         # AstrBot 看护（普通权限，独立进程）
-│   ├── install_guardian.ps1         # 安装器（注册为计划任务）
-│   ├── install_guardian.bat         # 自提权安装器（右键管理员运行）
-│   ├── network_fix.ps1              # 关闭 WiFi 网卡省电，网络更稳
-│   ├── start_bot.bat                # 可选：手动一键启动 AstrBot + NapCat
-│   ├── kick-report.ps1
-├── status.ps1
-├── set-o3hookmode.ps1
-├── experiment-compare.ps1
-├── smoke-test.ps1              # 诊断：统计每次被踢时的会话寿命（只读）
-│   ├── guardian.config.example.json  # 通知 / token 配置模板（真实文件不进 git）
-│   └── qrsync/                      # 可选：把二维码同步成网页，人在外面也能扫
-│       ├── qrsync.js                # 本地二维码网页（:8430，带访问密钥）
-│       ├── daemon.ps1               # 常驻守护：保活服务 + 公网隧道 + 端到端自检
-│       ├── start-qr.ps1             # 一次性前台模式（扫完 Ctrl+C 即收摊）
-│       └── config.example.json      # 配置示例（端口/二维码路径/隧道供应商）
+│   ├── runtime/                     # 运行时：真正常驻的看护进程
+│   │   ├── guardian.ps1             # 核心：保活 + 看门狗 + 分场景恢复（最高权限）
+│   │   ├── astrbot_watchdog.ps1     # AstrBot 看护（普通权限，独立进程）
+│   │   └── qrsync/                  # 可选：把二维码同步成网页，人在外面也能扫
+│   │       ├── qrsync.js            # 本地二维码网页（:8430，带访问密钥）
+│   │       ├── daemon.ps1           # 常驻守护：保活服务 + 公网隧道 + 端到端自检
+│   │       ├── start-qr.ps1         # 一次性前台模式（扫完 Ctrl+C 即收摊）
+│   │       ├── config.example.json  # 配置示例（端口/二维码路径/隧道供应商）
+│   │       └── README.md
+│   ├── install/                     # 安装与启动
+│   │   ├── install_guardian.ps1     # 安装器（注册为计划任务）
+│   │   ├── install_guardian.bat     # 自提权安装器（右键管理员运行）
+│   │   └── start_bot.bat            # 可选：手动一键启动 AstrBot + NapCat
+│   ├── ops/                         # 日常运维与诊断
+│   │   ├── status.ps1               # 一屏状态总览
+│   │   ├── smoke-test.ps1           # 冒烟测试
+│   │   ├── check-sync.ps1           # 核对仓库副本与生产目录是否一致
+│   │   ├── incident-snapshot.ps1    # 掉线现场取证
+│   │   ├── network_fix.ps1          # 关闭 WiFi 网卡省电，网络更稳
+│   │   └── validate-repo.ps1        # 编码/语法/密钥泄露 CI 校验
+│   └── research/                    # 研究与实验（不参与常驻）
+│       ├── kick-report.ps1          # 统计每次被踢时的会话寿命（只读）
+│       ├── experiment-compare.ps1   # 实验前后对比
+│       ├── set-o3hookmode.ps1       # o3HookMode 对照实验开关
+│       ├── recovery-sim.ps1         # 恢复状态机离线模拟（7 场景）
+│       └── daily-report.py          # 每日 token/掉线数据汇总邮件
 ├── config/
+│   ├── guardian.example.json        # 通知 / token 配置模板（真实文件不进 git）
 │   ├── napcat/
 │   │   ├── onebot11.example.json    # OneBot11：本地 HTTP API + 反向 WS（保活前提）
 │   │   ├── napcat.example.json      # NapCat 运行配置（含 fileLog）
@@ -427,6 +437,7 @@ napcat-guardian/
     ├── 部署指南.md
     ├── 原理说明.md
     ├── 常见问题.md
+    ├── 踢线根因与风控排查-20261117.md  # 120 分钟踢线根因：服务端票据 TTL，非风控
     ├── 审查修复记录.md              # 一份完整的代码审查清单（含"看过但不修"的理由）
     └── 演进方向-web与独立应用.md    # 要不要做网页面板/独立软件：成本与收益对比
 ```
@@ -438,7 +449,7 @@ napcat-guardian/
 ### 第 1 步：准备配置
 
 1. 把本仓库下载/克隆到任意位置（建议纯英文路径，如 `D:\napcat-guardian`）。
-2. 打开 `scripts/guardian.ps1`，改顶部 **Configuration 区**这几项（其余保持默认即可）：
+2. 打开 `scripts/runtime/guardian.ps1`，改顶部 **Configuration 区**这几项（其余保持默认即可）：
 
 ```powershell
 $QQ_UIN      = "YOUR_BOT_QQ"        # 机器人 QQ 号
@@ -467,23 +478,23 @@ $WEBUI_TOK   = "YOUR_WEBUI_TOKEN"   # NapCat WebUI token（在 NapCat 的 config
 
 ### 第 2 步：安装守护任务
 
-**右键** `scripts/install_guardian.bat` → **以管理员身份运行**。
+**右键** `scripts/install/install_guardian.bat` → **以管理员身份运行**。
 
 安装器会注册计划任务 `NapCatGuardian`（最高权限、登录时自启、隐藏窗口、崩溃自动重启），并立即启动。
 
 ### 第 3 步：（可选）看护 AstrBot
 
-编辑 `scripts/astrbot_watchdog.ps1` 顶部的 `$ASTRBOT_DIR` 与 `$PYTHON`，然后在**普通权限**下运行一次：
+编辑 `scripts/runtime/astrbot_watchdog.ps1` 顶部的 `$ASTRBOT_DIR` 与 `$PYTHON`，然后在**普通权限**下运行一次：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\astrbot_watchdog.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\runtime\astrbot_watchdog.ps1
 ```
 
 开机自启：给这个脚本建一个快捷方式，丢进
 `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup`，目标参数为
 `-NoProfile -WindowStyle Hidden -File "<脚本完整路径>"`。
 
-停掉它：`powershell -NoProfile -File scripts\astrbot_watchdog.ps1 -Stop`
+停掉它：`powershell -NoProfile -File scripts\runtime\astrbot_watchdog.ps1 -Stop`
 （早期版本要"先抢到互斥体才停"，而互斥体恰恰被正在跑的那份占着 —— 结果 `-Stop`
 一次也停不掉，只能去任务管理器里找 PID；现在改为按命令行精确匹配本脚本进程后结束。）
 
@@ -492,19 +503,19 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\astrbot_watchdog.ps1
 用 WiFi 挂机的话，以管理员身份再跑一次：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts\network_fix.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ops\network_fix.ps1
 ```
 
 它会关闭网卡"空闲断电省电"、把无线适配器调到最高性能，并重启网卡（会断网几秒）。
 
 ### 第 5 步：（可选）人在外面也能扫码
 
-NapCat 掉了登录态需要扫码时，人往往不在电脑前。`scripts/qrsync/` 把 `cache\qrcode.png`
+NapCat 掉了登录态需要扫码时，人往往不在电脑前。`scripts/runtime/qrsync/` 把 `cache\qrcode.png`
 变成一张"永远显示最新一版"的网页，再套一条公网隧道，手机在任何地方都能扫：
 
 ```powershell
 # 一次性：前台跑，扫完按 Ctrl+C，服务和隧道一起收干净
-powershell -ExecutionPolicy Bypass -File scripts\qrsync\start-qr.ps1
+powershell -ExecutionPolicy Bypass -File scripts\runtime\qrsync\start-qr.ps1
 
 # 或者注册成计划任务常驻（daemon.ps1），断了自动重连
 ```
@@ -574,7 +585,7 @@ Get-Content D:\napcat\guardian.log -Tail 20       # 应能看到 started / keep-
 | 企业微信 / 钉钉 / 飞书 / Server酱 / PushPlus | 想推到群里 | 填 webhook URL 即可，脚本按 `type` 自动组装报文 |
 | Windows Toast | 本机在用时 | WinRT `ToastNotificationManager`，家庭版也可用；失败静默 |
 
-敏感配置不写在脚本里，放到 `$NAPCAT_HOME\guardian.config.json`（已被 `.gitignore` 忽略），模板见 `scripts/guardian.config.example.json`：
+敏感配置不写在脚本里，放到 `$NAPCAT_HOME\guardian.config.json`（已被 `.gitignore` 忽略），模板见 `config/guardian.example.json`：
 
 ```json
 {
@@ -602,8 +613,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File D:\napcat\guardian.ps1 -Test
 `-SelfTest` 只能测单个函数；**分支顺序**类的 bug 它测不到（2026-11-15 真的踩了两次：被踢快速通道被僵尸态分支抢先、等扫码判据用码龄）。这个脚本把 `guardian.ps1` 的函数部分 dot-source 进来，把一切会动系统的函数换成桩，然后直接调 `Do-Recovery` 断言返回值与日志关键字。
 
 ```powershell
-.\scripts\recovery-sim.ps1                      # 用同目录的 guardian.ps1
-.\scripts\recovery-sim.ps1 -Guardian D:\napcat\guardian.ps1
+.\scripts\research\recovery-sim.ps1                      # 默认用 ..\runtime\guardian.ps1
+.\scripts\research\recovery-sim.ps1 -Guardian D:\napcat\guardian.ps1
 ```
 
 八个断言（7 个场景）：
@@ -629,7 +640,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File D:\napcat\guardian.ps1 -Test
 查自己机器上的数据：
 
 ```powershell
-python .\scripts\daily-report.py      # 只看不发：填好配置后它会发邮件，也可直接读 provider_stats
+python .\scripts\research\daily-report.py      # 只看不发：填好配置后它会发邮件，也可直接读 provider_stats
 ```
 
 ### 13. 反向看护：谁来看护看护者
@@ -640,7 +651,7 @@ python .\scripts\daily-report.py      # 只看不发：填好配置后它会发�
 
 ```
 # 单独跑一次检查（不发信也可看结论）
-.\scripts\astrbot_watchdog.ps1 -CheckGuardian
+.\scripts\runtime\astrbot_watchdog.ps1 -CheckGuardian
 guardian heartbeat: pid=33808 at=13:58:50 ageMin=0
 healthy=True
 ```
@@ -652,10 +663,10 @@ healthy=True
 
 仓库里的脚本是**脱敏过的副本**（`YOUR_BOT_QQ`、`C:\path\to\astrbot` 这类占位符），所以永远不可能和线上文件逐字节相同。但除了这些**故意不同**的行，其余必须一致——否则用户拿到的脚本和你测过的脚本不是同一个东西。
 
-`scripts\check-sync.ps1` 就是干这件事的：
+`scripts\ops\check-sync.ps1` 就是干这件事的：
 
 ```powershell
-.\scripts\check-sync.ps1
+.\scripts\ops\check-sync.ps1
 ```
 
 ```
@@ -688,13 +699,12 @@ qrsync.js              OK
 | 敏感串扫描 | 真实 QQ 号、token、邮箱、域名不许进公开仓库 |
 
 ```powershell
-.\scripts\validate-repo.ps1
+.\scripts\ops\validate-repo.ps1
 ```
 
 ```
-checked: 14 ps1, 6 json, 1 js, 1 py
-  note: scripts\install_guardian.ps1 is ASCII-only, BOM not required
-  note: scripts\network_fix.ps1 is ASCII-only, BOM not required
+checked: 15 ps1, 6 json, 1 js, 1 py
+  note: scripts\ops\network_fix.ps1 is ASCII-only, BOM not required
 
 [OK] every check passed
 ```
@@ -703,9 +713,9 @@ checked: 14 ps1, 6 json, 1 js, 1 py
 
 已经接进 GitHub Actions（`.github/workflows/validate.yml`），每次 push / PR 在 `windows-latest` 上跑三步：
 
-1. `validate-repo.ps1`（上面这些）
-2. `guardian.ps1 -SelfTest`（9 项源码级断言）
-3. `recovery-sim.ps1`（7 个恢复场景的行为断言）
+1. `scripts\ops\validate-repo.ps1`（上面这些）
+2. `scripts\runtime\guardian.ps1 -SelfTest`（9 项源码级断言）
+3. `scripts\research\recovery-sim.ps1`（7 个恢复场景的行为断言）
 
 三步在本地都能跑，实测全 PASS。
 ### 16. 掉线那一刻的证据：`incident-snapshot.ps1`
@@ -713,7 +723,7 @@ checked: 14 ps1, 6 json, 1 js, 1 py
 出问题时值得看的东西散在 6 个状态文件、4 路日志里，而且几个小时后就会被新日志挤掉。这个脚本一次性把它们抓进一个文件夹：
 
 ```powershell
-.\scripts\incident-snapshot.ps1
+.\scripts\ops\incident-snapshot.ps1
 ```
 
 ```
@@ -804,7 +814,7 @@ snapshot: D:\napcat\incidents\20261115-143014
   A：发送端编码问题，不是接收端。`Invoke-RestMethod` 传字符串正文时会按 ASCII 编码，见[踩坑记录第 13 条](#关键踩坑记录)。本仓库已修复：正文先 `UTF8.GetBytes()`，再带 `charset=utf-8` 发出。
 
 - **Q：人不在家，机器人要扫码怎么办？**
-  A：用 `scripts/qrsync/`。它把二维码变成网页 + 公网隧道，手机随时能扫；页面上还会显示看护写出的 `login-state.json` 状态（需要扫码 / 已上线 / 正在恢复）。
+  A：用 `scripts/runtime/qrsync/`。它把二维码变成网页 + 公网隧道，手机随时能扫；页面上还会显示看护写出的 `login-state.json` 状态（需要扫码 / 已上线 / 正在恢复）。
 
 - **Q：ntfy 通知一条都收不到？**
   A：先 `-TestNotify` 看日志是 `notify(ntfy) sent` 还是 `notify(ntfy) failed: 操作超时`。国内网络下 `ntfy.sh` 的 http/https 都可能整体不可达，此时改用邮件通道（`notifyEmail`），守护脚本会自动按 ntfy → 邮件 → Webhook → Toast 的顺序降级。
@@ -816,7 +826,7 @@ snapshot: D:\napcat\incidents\20261115-143014
   A：多数情况不是。手机 QQ 的「切换账号」**不等于退出登录**，小号会话仍留在后台，服务端认为该号同时在线于两端，于是把 PC 侧置为「登录态已失效」。要彻底避免，就在手机的小号界面点「退出登录」，而不是切回大号。
 
 - **Q：AstrBot 没被拉起来？**
-  A：检查 `scripts/astrbot_watchdog.ps1` 里的 `$ASTRBOT_DIR`、`$PYTHON`，并确认它是以**普通权限**运行的。
+  A：检查 `scripts/runtime/astrbot_watchdog.ps1` 里的 `$ASTRBOT_DIR`、`$PYTHON`，并确认它是以**普通权限**运行的。
 
 - **Q：桌面 QQ 一开，机器人就掉？**
   A：见[桌面 QQ 与机器人共存](#桌面-qq-与机器人共存)，设 `$QQ_DATA_DIR` 隔离数据目录。
@@ -835,7 +845,7 @@ snapshot: D:\napcat\incidents\20261115-143014
 
 ## 每日日报
 
-`scripts/daily-report.py` 把平时散落在日志里的数字汇总成一封邮件：AstrBot token 消耗、被踢记录、AstrBot 看护重启次数，以及最近 24 小时出现次数最多的 `[ERRO]`（按消息归一化聚合，用于发现插件反复报错）。`guardian.ps1` 每天 09:00 之后调用它一次（同一天只成功发一次，失败最多每小时重试一次）。
+`scripts/research/daily-report.py` 把平时散落在日志里的数字汇总成一封邮件：AstrBot token 消耗、被踢记录、AstrBot 看护重启次数，以及最近 24 小时出现次数最多的 `[ERRO]`（按消息归一化聚合，用于发现插件反复报错）。`guardian.ps1` 每天 09:00 之后调用它一次（同一天只成功发一次，失败最多每小时重试一次）。
 
 ```
 # 只看正文不发送（需配置 astrbotDb / astrbotLog 才能统计 token 与插件错误）
