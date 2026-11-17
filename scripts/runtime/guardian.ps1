@@ -1433,13 +1433,27 @@ function Send-KeepAlive
         $r = Invoke-RestMethod -Uri "$HTTP_API/send_private_msg" -Method Post `
                 -Body ([System.Text.Encoding]::UTF8.GetBytes($body)) `
                 -ContentType "application/json; charset=utf-8" -TimeoutSec 15
-        if ($r.retcode -eq 0)
+        # 失败判据要同时看 retcode 和 status：假在线（1006514）时 HTTP 仍是 200，
+        # 响应体里 retcode=200、status="failed"。旧代码只判断 retcode -eq 0，失败时
+        # 仅打一条日志、不计入 SendFailAts，只能等 Read-NewNapCatLog 去读异步落盘的
+        # winston 日志，实测 18:48 失败拖到 19:10 才发现（延迟 22 分钟）。
+        # 此刻拿到响应就已能确定成败，直接计入，让同一轮的 Test-SendBroken 立刻命中。
+        $kaStatus = [string]$r.status
+        $kaFailed = ($r.retcode -ne 0) -or ($kaStatus -and $kaStatus -ne "ok")
+        if (-not $kaFailed)
         {
             $sessKA = Get-SessionMinutes
             $sessTxt = if ($sessKA -ge 0) { " (session " + $sessKA + "m)" } else { "" }
             Write-Log ("keep-alive sent: " + $msg + $sessTxt)
         }
-        else { Write-Log ("keep-alive retcode: " + $r.retcode) }
+        else
+        {
+            # 同步确定假在线：计入发送失败时间戳与单调计数。
+            # 进入分支后 Confirm-SendBroken 会再发一条探针复核，单次抖动不会误重启。
+            [void]$script:SendFailAts.Add((Get-Date))
+            $script:SendFailSeq++
+            Write-Log ("keep-alive failed: status=" + $kaStatus + " retcode=" + $r.retcode)
+        }
     }
     catch { Write-Log ("keep-alive error: " + $_.Exception.Message) }
 }
