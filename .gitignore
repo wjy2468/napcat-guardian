@@ -33,3 +33,8 @@ desktop.ini
 # Python
 __pycache__/
 *.pyc
+
+# ===== web console runtime artifacts =====
+web/config.json
+web/*.log
+web/screenshots/

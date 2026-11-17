@@ -1,4 +1,4 @@
-# NapCat Guardian
+﻿# NapCat Guardian
 
 > 一套让 Windows 上的第三方 QQ 机器人（NapCat + AstrBot）**稳定长期挂机**的方案：保活探针 + 分场景自动恢复 + 防重启风暴熔断，**开机自动拉起**、被踢下线也能自己救回来，真正做到无人值守。
 
@@ -433,13 +433,20 @@ napcat-guardian/
 │   │   └── webui.example.json       # WebUI 配置（token 已脱敏）
 │   └── astrbot/
 │       └── cmd_config.example.json  # AstrBot 关键配置参考（仅对接/降级）
+├── web/                              # 可选：网页面板（独立 Node 服务，:8440，零 npm 依赖）
+│   ├── server.js                     # HTTP 服务：鉴权、数据聚合、SSE、受保护动作
+│   ├── start-console.ps1             # 启动器（互斥体防双开 + 崩溃后退避重启）
+│   ├── config.example.json           # 配置模板（key / 端口 / napcatHome）
+│   ├── README.md                     # 面板完整说明与自测记录
+│   └── public/                       # index.html / app.js / style.css / favicon.svg
 └── docs/
     ├── 部署指南.md
     ├── 原理说明.md
     ├── 常见问题.md
     ├── 踢线根因与风控排查-20261117.md  # 120 分钟踢线根因：服务端票据 TTL，非风控
     ├── 审查修复记录.md              # 一份完整的代码审查清单（含"看过但不修"的理由）
-    └── 演进方向-web与独立应用.md    # 要不要做网页面板/独立软件：成本与收益对比
+    ├── 演进方向-web与独立应用.md    # 要不要做网页面板/独立软件：成本与收益对比
+    └── 前端控制台.md                # 面板的接口、安全模型与性能改造（单文件 + gzip + SSE）
 ```
 
 ## 快速开始
@@ -911,6 +918,15 @@ SELFTEST PASSED (5 checks)
 ```
 
 五项分别对应：历史日志不会被当成"刚刚被踢"、被踢行能被识别、发送失败计数生效、探测窗口过期后恢复健康、行首时间戳能解析（静默时长依赖它）。退出码 = 失败项数，便于放进任何检查脚本里。
+
+### 17. 可选：网页控制台 `web/`
+
+把"看不到的状态"变成手机上能刷的页面：机器人是否在线、登录二维码、被踢历史、AstrBot 与扫码通道是否健康、三份日志尾部，以及四个需要二次确认的受保护动作（重启 worker、触发通知自检、拉起守护任务、全量重启）。
+
+- 独立进程、**零 npm 依赖**（`node server.js` 即可），默认 `127.0.0.1:8440`，`?k=<key>` 或 `X-QR-Key` 头鉴权；
+- **只读为主**：数据全部读 `metrics.json` / `kick.log` / 各 state 文件与日志尾部；动作一律转交既有脚本或写 flag 文件，面板自己**不杀进程**；
+- 公网暴露可与 qrsync 共用一条隧道（qrsync `config.json` 的 `publicPort` 指向 8440），也可单独开隧道；
+- 部署与自测细节见 [`web/README.md`](web/README.md)，接口与安全模型见 [`docs/前端控制台.md`](docs/前端控制台.md)。
 
 ## License
 

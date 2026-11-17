@@ -1,0 +1,230 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="robots" content="noindex, nofollow, noarchive">
+<title>NapCat 机器人控制台</title>
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+</head>
+<body>
+<a class="skip" href="#main">跳到主要内容</a>
+
+<header class="top">
+  <div class="brand">
+    <span class="logo" aria-hidden="true">◈</span>
+    <h1>NapCat 机器人控制台</h1>
+    <span class="sub" id="sub">连接中…</span>
+  </div>
+  <div class="topmeta">
+    <span class="pill" id="conn" role="status" aria-live="polite"><span class="dot" aria-hidden="true"></span><span id="connText">连接中…</span></span>
+    <span class="pill" id="clockPill"><span id="clock">--:--:--</span></span>
+    <button id="pauseBtn" class="ghost" type="button" aria-pressed="false" title="暂停 3 秒轮询">暂停刷新</button>
+  </div>
+</header>
+
+<div class="banner" id="banner" role="alert" hidden>
+  <span aria-hidden="true">⚠</span>
+  <ul id="bannerList"></ul>
+</div>
+
+<main id="main">
+  <section class="cards" aria-label="总览">
+    <!-- 机器人 -->
+    <article class="card wide" aria-labelledby="h-bot">
+      <h2 id="h-bot">机器人状态 <span class="tag" id="botTag"></span></h2>
+      <div class="big unknown" id="botBig"><span class="dot" aria-hidden="true"></span><span id="botState">读取中</span><span class="unit" id="botUnit"></span></div>
+      <div class="muted small" id="botNote">正在读取 metrics.json…</div>
+      <dl class="kv">
+        <dt>本次会话</dt><dd id="k-session">—</dd>
+        <dt>今日被踢</dt><dd id="k-kicks">—</dd>
+        <dt>下次探针</dt><dd id="k-probe">—</dd>
+        <dt>上次恢复</dt><dd id="k-recover">—</dd>
+        <dt>登录记录</dt><dd id="k-login">—</dd>
+      </dl>
+      <div class="statline" id="botChips"></div>
+    </article>
+
+    <!-- 二维码 -->
+    <article class="card qr" aria-labelledby="h-qr">
+      <h2 id="h-qr">登录二维码 <span class="tag" id="qrTag"></span></h2>
+      <div class="qrbox" id="qrBox" data-overlay="">
+        <img id="qrImg" alt="QQ 登录二维码" hidden>
+        <div class="empty" id="qrEmpty">等待二维码…</div>
+      </div>
+      <div class="qrstate" id="qrState"><span class="dot" aria-hidden="true"></span><span id="qrStateText">—</span></div>
+      <p class="qrhint" id="qrHint"></p>
+    </article>
+
+    <!-- AstrBot -->
+    <article class="card" aria-labelledby="h-ab">
+      <h2 id="h-ab">AstrBot <span class="tag" id="abTag"></span></h2>
+      <div class="big sm unknown" id="abBig"><span class="dot" aria-hidden="true"></span><span id="abState">读取中</span></div>
+      <dl class="kv">
+        <dt>端口</dt><dd id="k-abport">—</dd>
+        <dt>累计重启</dt><dd id="k-abrestart">—</dd>
+        <dt>起始</dt><dd id="k-absince">—</dd>
+        <dt>状态写入</dt><dd id="k-abat">—</dd>
+      </dl>
+    </article>
+
+    <!-- 扫码通道 -->
+    <article class="card tn" aria-labelledby="h-tn">
+      <h2 id="h-tn">扫码通道 <span class="tag" id="tnTag"></span></h2>
+      <div class="big sm unknown" id="tnBig"><span class="dot" aria-hidden="true"></span><span id="tnState">读取中</span></div>
+      <dl class="kv">
+        <dt>提供方</dt><dd id="k-tnprov">—</dd>
+        <dt>公网地址</dt><dd id="k-tnurl" class="mono">—</dd>
+        <dt>连续失败</dt><dd id="k-tnfail">—</dd>
+        <dt>状态写入</dt><dd id="k-tnat">—</dd>
+      </dl>
+    </article>
+
+    <!-- 守卫 -->
+    <article class="card" aria-labelledby="h-gd">
+      <h2 id="h-gd">守卫进程 <span class="tag" id="gdTag"></span></h2>
+      <div class="big sm unknown" id="gdBig"><span class="dot" aria-hidden="true"></span><span id="gdState">读取中</span></div>
+      <dl class="kv">
+        <dt>PID</dt><dd id="k-gdpid" class="mono">—</dd>
+        <dt>心跳</dt><dd id="k-gdbeat">—</dd>
+        <dt>控制台运行</dt><dd id="k-uptime">—</dd>
+      </dl>
+    </article>
+
+    <!-- 通知设置 -->
+    <article class="card notify" aria-labelledby="h-nf">
+      <h2 id="h-nf">通知设置</h2>
+      <div class="switches" id="notifySwitches">
+        <div class="switch-row">
+          <span class="switch-label">QQ 邮箱<span class="switch-desc">主通道，掉线/恢复必发</span></span>
+          <span class="switch-state" id="nfEmail">—</span>
+        </div>
+        <label class="switch-row">
+          <span class="switch-label">ntfy 推送<span class="switch-desc">默认关闭，需要时再开</span></span>
+          <input type="checkbox" id="nfNtfy" role="switch" class="switch" aria-label="ntfy 推送开关">
+        </label>
+        <label class="switch-row">
+          <span class="switch-label">本机弹窗<span class="switch-desc">电脑桌面右下角提示</span></span>
+          <input type="checkbox" id="nfToast" role="switch" class="switch" aria-label="本机弹窗开关">
+        </label>
+      </div>
+      <p class="muted small" id="nfHint">开关改动立即写回配置，重启守卫后生效。</p>
+    </article>
+  </section>
+
+  <!-- 被踢历史 -->
+  <section class="panel" aria-labelledby="h-kick">
+    <div class="panel-head">
+      <h2 id="h-kick">被踢历史</h2>
+      <span class="small dim" id="kickMeta"></span>
+      <div class="tools">
+        <label class="small dim" for="kickLimit">显示</label>
+        <select id="kickLimit">
+          <option value="20">20 条</option>
+          <option value="50" selected>50 条</option>
+          <option value="100">100 条</option>
+          <option value="200">200 条</option>
+        </select>
+        <button id="kickRefresh" class="small ghost" type="button">刷新</button>
+      </div>
+    </div>
+    <div class="tablewrap">
+      <table>
+        <caption class="sr-only">来自 kick.log 的被踢记录，按时间倒序</caption>
+        <thead>
+          <tr>
+            <th scope="col">被踢时间</th>
+            <th scope="col">间隔</th>
+            <th scope="col">会话</th>
+            <th scope="col">静默</th>
+            <th scope="col">出口 IP</th>
+            <th scope="col">QQ 日志</th>
+          </tr>
+        </thead>
+        <tbody id="kickBody">
+          <tr class="empty-row"><td colspan="6">加载中…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- 日志 -->
+  <section class="panel" aria-labelledby="h-log">
+    <div class="panel-head">
+      <h2 id="h-log">日志查看</h2>
+      <span class="small dim" id="logMeta"></span>
+    </div>
+    <div class="panel-body">
+      <div class="logbar">
+        <div class="segmented" role="group" aria-label="选择日志">
+          <button type="button" data-log="guardian" aria-pressed="true">guardian.log</button>
+          <button type="button" data-log="astrbot" aria-pressed="false">astrbot_watchdog.log</button>
+          <button type="button" data-log="qrsync" aria-pressed="false">qrsync daemon.log</button>
+        </div>
+        <input type="search" id="logQ" placeholder="过滤关键字（如 kick、notify、错误）" aria-label="过滤日志关键字">
+        <select id="logLevel" aria-label="日志级别">
+          <option value="all">全部</option>
+          <option value="err">错误</option>
+          <option value="warn">警告</option>
+        </select>
+        <select id="logLines" aria-label="显示行数">
+          <option value="100">100 行</option>
+          <option value="200" selected>200 行</option>
+          <option value="500">500 行</option>
+          <option value="1000">1000 行</option>
+        </select>
+        <button id="logRefresh" class="small" type="button">刷新</button>
+        <label class="small dim nowrap"><input type="checkbox" id="logAuto"> 自动刷新</label>
+      </div>
+      <pre class="logview" id="logView" tabindex="0" aria-live="off" aria-label="日志内容">加载中…</pre>
+    </div>
+  </section>
+
+  <!-- 受保护动作 -->
+  <section class="panel" aria-labelledby="h-act">
+    <div class="panel-head">
+      <h2 id="h-act">受保护动作</h2>
+      <span class="small dim">每个动作都需要手工输入确认词；本服务不杀进程，全部交给既有脚本 / flag / NapCat 自身</span>
+    </div>
+    <div class="panel-body">
+      <div class="actions" id="actions"></div>
+      <div class="history">
+        <h3>最近动作</h3>
+        <ul id="actHistory"><li class="dim">还没有执行过动作</li></ul>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <span>NapCat Web 控制台 <span id="ver" class="mono">v—</span></span>
+  <span>· 数据只读自 NapCat 部署目录（默认 `D:\napcat`）</span>
+  <span>· 3 秒轮询，页面不含 QQ 号 / 邮箱 / token</span>
+</footer>
+
+<dialog id="dlg" aria-labelledby="dlgTitle" aria-describedby="dlgDesc">
+  <form method="dialog" id="dlgForm">
+    <div class="dlg-head">
+      <h2 id="dlgTitle">确认动作</h2>
+    </div>
+    <div class="dlg-body">
+      <p id="dlgDesc"></p>
+      <p class="warnline" id="dlgWarn"></p>
+      <label for="dlgPhrase" id="dlgLabel">请输入确认词</label>
+      <input type="text" id="dlgPhrase" autocomplete="off" spellcheck="false">
+      <p class="dlg-msg" id="dlgMsg" role="status"></p>
+    </div>
+    <div class="dlg-actions">
+      <button type="button" class="ghost" id="dlgCancel">取消</button>
+      <button type="button" id="dlgOk" disabled>确认执行</button>
+    </div>
+  </form>
+</dialog>
+
+<div class="toasts" id="toasts" role="status" aria-live="polite"></div>
+
+<script src="app.js" defer></script>
+</body>
+</html>

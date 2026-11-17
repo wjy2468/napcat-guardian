@@ -1,0 +1,6 @@
+{
+    "key":  "YOUR_CONSOLE_KEY (或留空，首次启动自动生成)",
+    "port":  8440,
+    "host":  "127.0.0.1",
+    "napcatHome":  "D:\\napcat"
+}
