@@ -111,7 +111,8 @@ if ($task) {
 
 $accepted = [System.Net.SecurityProtocolType]::Tls12
 try {
-    $st = Invoke-RestMethod 'http://127.0.0.1:3000/get_status' -TimeoutSec 5
+    $st = Invoke-RestMethod 'http://127.0.0.1:3000/get_status' -Method Post `
+        -Body '{}' -ContentType 'application/json' -TimeoutSec 5
     [void]$summary.Add("onebot     : status=$($st.status) retcode=$($st.retcode) online=$($st.data.online) good=$($st.data.good)")
 } catch {
     [void]$summary.Add("onebot     : unreachable ($($_.Exception.Message))")

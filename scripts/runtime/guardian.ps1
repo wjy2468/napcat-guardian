@@ -705,6 +705,26 @@ function Get-NapCatOwnedPids
     $procs = @(Get-CimInstance Win32_Process -Filter "Name='QQ.exe' OR Name='NapCatWinBootMain.exe'" -ErrorAction SilentlyContinue)
     if ($procs.Count -eq 0) { return @() }
 
+    # A process name is not an ownership proof.  A normal desktop QQ.exe can
+    # coexist with NapCat, so only trust launcher processes whose executable
+    # path or command line points into the configured NapCat installation.
+    $napcatRoot = ([IO.Path]::GetFullPath($NAPCAT_DIR)).TrimEnd('\') + '\'
+    $homeRoot = ([IO.Path]::GetFullPath($NAPCAT_HOME)).TrimEnd('\') + '\'
+    $trustedBoots = @($procs | Where-Object {
+        if ($_.Name -ne 'NapCatWinBootMain.exe') { return $false }
+        $exe = [string]$_.ExecutablePath
+        $cmd = [string]$_.CommandLine
+        ($exe -and $exe.StartsWith($napcatRoot, [StringComparison]::OrdinalIgnoreCase)) -or
+            ($cmd -and ($cmd.IndexOf($napcatRoot, [StringComparison]::OrdinalIgnoreCase) -ge 0 -or
+                        $cmd.IndexOf($homeRoot, [StringComparison]::OrdinalIgnoreCase) -ge 0))
+    })
+    if ($trustedBoots.Count -eq 0) {
+        if (@($procs | Where-Object { $_.Name -eq 'NapCatWinBootMain.exe' }).Count -gt 0) {
+            Write-Log 'NapCat launcher found but rejected by installation-path filter; no NapCat process will be stopped.' 'Yellow'
+        }
+        return @()
+    }
+
     $byParent = @{}
     foreach ($p in $procs)
     {
@@ -715,7 +735,7 @@ function Get-NapCatOwnedPids
 
     $owned = New-Object System.Collections.ArrayList
     $stack = New-Object System.Collections.Stack
-    foreach ($b in @($procs | Where-Object { $_.Name -eq 'NapCatWinBootMain.exe' }))
+    foreach ($b in $trustedBoots)
     {
         $bid = [int]$b.ProcessId
         if (-not $owned.Contains($bid)) { [void]$owned.Add($bid); $stack.Push($bid) }

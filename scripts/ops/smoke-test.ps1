@@ -150,7 +150,8 @@ if ($SkipPublic) {
 
 # ---------- 7. OneBot 在线 ----------
 try {
-    $gs = Invoke-RestMethod 'http://127.0.0.1:3000/get_status' -TimeoutSec 8
+    $gs = Invoke-RestMethod 'http://127.0.0.1:3000/get_status' -Method Post `
+        -Body '{}' -ContentType 'application/json' -TimeoutSec 8
     $online = $gs.data.online
     if ($online -eq $true) { Add-Result 'OneBot API' 'PASS' ("online=true good=" + $gs.data.good) }
     else { Add-Result 'OneBot API' 'WARN' ("online=" + $online + "（未登录？）") }

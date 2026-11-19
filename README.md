@@ -924,7 +924,7 @@ SELFTEST PASSED (5 checks)
 
 把"看不到的状态"变成手机上能刷的页面：机器人是否在线、登录二维码、被踢历史、AstrBot 与扫码通道是否健康、三份日志尾部，以及四个需要二次确认的受保护动作（重启 worker、触发通知自检、拉起守护任务、全量重启）。
 
-- 独立进程、**零 npm 依赖**（`node server.js` 即可），默认 `127.0.0.1:8440`，`?k=<key>` 或 `X-QR-Key` 头鉴权；
+- 独立进程、**零 npm 依赖**（`node server.js` 即可），默认 `127.0.0.1:8440`，`?k=<key>` 或 `x-key: <key>` 头鉴权；
 - **只读为主**：数据全部读 `metrics.json` / `kick.log` / 各 state 文件与日志尾部；动作一律转交既有脚本或写 flag 文件，面板自己**不杀进程**；
 - 公网暴露可与 qrsync 共用一条隧道（qrsync `config.json` 的 `publicPort` 指向 8440），也可单独开隧道；
 - 部署与自测细节见 [`web/README.md`](web/README.md)，接口与安全模型见 [`docs/前端控制台.md`](docs/前端控制台.md)。

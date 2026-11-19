@@ -13,18 +13,20 @@ REM  (install_guardian.bat, as administrator).
 REM ============================================================
 setlocal
 set "HERE=%~dp0"
+for %%I in ("%HERE%..\..") do set "PROJECT_ROOT=%%~fI"
+set "WATCHDOG=%PROJECT_ROOT%\scripts\runtime\astrbot_watchdog.ps1"
 
 echo ========================================
 echo   QQ Bot One-Click Launcher
 echo ========================================
 
-if not exist "%HERE%astrbot_watchdog.ps1" (
-    echo [ERROR] astrbot_watchdog.ps1 not found next to this file.
+if not exist "%WATCHDOG%" (
+    echo [ERROR] astrbot_watchdog.ps1 not found at "%WATCHDOG%".
     pause & exit /b 1
 )
 
 echo [1/2] Starting AstrBot watchdog (hidden) ...
-start "" powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "%HERE%astrbot_watchdog.ps1"
+start "" powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "%WATCHDOG%"
 
 echo [2/2] Triggering NapCat via scheduled task ...
 schtasks /run /tn "NapCatGuardian" >nul 2>&1

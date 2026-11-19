@@ -102,7 +102,7 @@ foreach ($pair in $pairs) {
         file    = $pair.Name
         status  = ''
         detail  = ''
-        prodLen = if ($null -eq $prodLines) { -1 } else { $prod.Count }
+        prodLen = if ($null -eq $prodLines) { -1 } else { $prodLines.Count }
         repoLen = if ($null -eq $repoLines) { -1 } else { $repoLines.Count }
     }
 

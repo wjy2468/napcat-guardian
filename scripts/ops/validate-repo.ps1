@@ -117,12 +117,33 @@ if (-not $node) {
 }
 
 # ---------------------------------------------------------------- Python
-$python = Get-Command python -ErrorAction SilentlyContinue
+$pythonExe = $null
+$pythonCandidates = New-Object System.Collections.Generic.List[string]
+foreach ($name in @('py.exe', 'python.exe', 'python')) {
+    $cmd = Get-Command $name -ErrorAction SilentlyContinue
+    if ($cmd -and $cmd.Source -and (Test-Path -LiteralPath $cmd.Source)) { [void]$pythonCandidates.Add($cmd.Source) }
+}
+foreach ($candidate in @(
+    (Join-Path $env:LOCALAPPDATA 'Programs\Python\Python314\python.exe'),
+    (Join-Path $env:LOCALAPPDATA 'Programs\Python\Python313\python.exe'),
+    (Join-Path $env:LOCALAPPDATA 'Programs\Python\Python312\python.exe'),
+    (Join-Path $env:ProgramFiles 'Python314\python.exe'),
+    (Join-Path $env:ProgramFiles 'Python313\python.exe'),
+    (Join-Path $env:ProgramFiles 'Python312\python.exe')
+)) {
+    if ($candidate -and (Test-Path -LiteralPath $candidate)) { [void]$pythonCandidates.Add($candidate) }
+}
+foreach ($candidate in $pythonCandidates | Select-Object -Unique) {
+    try {
+        $probe = (& $candidate -c 'import sys; sys.exit(0)' 2>&1 | Out-String)
+        if ($LASTEXITCODE -eq 0 -and $probe -notmatch 'Failed to find real location') { $pythonExe = $candidate; break }
+    } catch { }
+}
 $pyFiles = Get-ChildItem -LiteralPath $Root -Recurse -File -Filter *.py |
     Where-Object { $_.FullName -notmatch '\\\.git\\|\\__pycache__\\' }
 
-if (-not $python) {
-    [void]$notes.Add('python not found - skipped Python syntax check')
+if (-not $pythonExe) {
+    [void]$notes.Add('runnable Python interpreter not found - skipped Python syntax check')
 } else {
     # A helper file avoids the Windows command-line quoting rules that eat the
     # double quotes inside a python -c one-liner.  compile() only parses, so no
@@ -143,7 +164,7 @@ if (-not $python) {
 
     foreach ($f in $pyFiles) {
         $rel = Get-Relative $f.FullName
-        $out = & $python.Source $checker $f.FullName 2>&1
+        $out = & $pythonExe $checker $f.FullName 2>&1
         if ($LASTEXITCODE -ne 0) { Add-Failure 'python' $rel (($out | Out-String).Trim()) }
     }
 }

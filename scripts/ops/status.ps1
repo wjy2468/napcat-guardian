@@ -63,7 +63,8 @@ $online = $null
 $good = $null
 $apiError = ''
 try {
-    $st = Invoke-RestMethod -Uri 'http://127.0.0.1:3000/get_status' -TimeoutSec 6
+    $st = Invoke-RestMethod -Uri 'http://127.0.0.1:3000/get_status' -Method Post `
+        -Body '{}' -ContentType 'application/json' -TimeoutSec 6
     if ($st.data) { $online = [bool]$st.data.online; $good = [bool]$st.data.good }
 } catch { $apiError = $_.Exception.Message }
 
@@ -136,7 +137,7 @@ Write-Host ('  机器人      ' + $botText + $(if ($good -eq $true) { '（good�
 if ($metrics) {
     # 近几次被踢的中位会话时长：用来判断"这次登录还能撑多久"
 $kickMed = $null
-$kickLogPath = 'D:\napcat\kick.log'
+$kickLogPath = Join-Path $Root 'kick.log'
 if (Test-Path -LiteralPath $kickLogPath) {
     $vals = @(Get-Content -LiteralPath $kickLogPath -Encoding UTF8 |
         ForEach-Object { [string]$_ } |

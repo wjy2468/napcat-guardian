@@ -614,6 +614,7 @@ function doGuardianStart() {
 }
 
 function doFullRestart() {
+  fs.writeFileSync(P.forceFlag, new Date().toISOString() + '\n', 'utf8');
   if (!fs.existsSync(P.restartScript)) throw new Error('找不到 restart_napcat.ps1');
   const ps = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
   spawnDetached(ps, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', P.restartScript]);
