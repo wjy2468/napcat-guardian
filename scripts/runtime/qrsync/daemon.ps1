@@ -65,13 +65,16 @@ Rotate-Log
 # 而且它无条件杀掉机器上所有的 ngrok.exe / cloudflared.exe，把与项目无关的隧道一起干掉。
 # 现在只认三件事：本文件路径、qrsync.js、指向本端口的隧道进程。
 if ($Stop) {
-  $stopPort = 8430
+  $stopPorts = New-Object System.Collections.ArrayList
+  [void]$stopPorts.Add(8430)
   try {
     if (Test-Path $cfgPath) {
       $jc = Get-Content $cfgPath -Raw -Encoding UTF8 | ConvertFrom-Json
-      if ($jc.port) { $stopPort = [int]$jc.port }
+      if ($jc.port) { [void]$stopPorts.Add([int]$jc.port) }
+      if ([int]$jc.publicPort -gt 0) { [void]$stopPorts.Add([int]$jc.publicPort) }
     }
   } catch { }
+  $stopPorts = @($stopPorts | Select-Object -Unique)
   $selfRe = [regex]::Escape((Join-Path $root 'daemon.ps1'))
 
   # node 用"脚本路径必须是最后一个参数"来卡：否则任何命令行里恰好带着 qrsync.js
@@ -86,7 +89,8 @@ if ($Stop) {
       if ($_.Name -eq 'node.exe') { return ($cl -match $nodeRe) }
       # ngrok http --url=... 8430 / cloudflared tunnel --url http://127.0.0.1:8430 / ssh -R ..:localhost:8430
       if ($_.Name -in @('ngrok.exe', 'cloudflared.exe', 'ssh.exe')) {
-        return ($cl -match "(^|[\s:=])$stopPort(\s|$)")
+        foreach ($sp in $stopPorts) { if ($cl -match "(^|[\s:=])$sp(\s|$)") { return $true } }
+        return $false
       }
       return $false
   })
@@ -262,7 +266,7 @@ function Start-Tunnel {
       }
     }
     elseif ($name -eq 'localhost.run') {
-      $proc = Start-Process -FilePath $sshExe -ArgumentList @('-o', 'StrictHostKeyChecking=no', '-o', "UserKnownHostsFile=$root\known_hosts", '-o', 'ServerAliveInterval=30', '-o', 'ServerAliveCountMax=3', '-o', 'ExitOnForwardFailure=yes', '-R', "80:localhost:$tunnelPort", 'nokey@localhost.run') `
+      $proc = Start-Process -FilePath $sshExe -ArgumentList @('-o', 'StrictHostKeyChecking=accept-new', '-o', "UserKnownHostsFile=$root\known_hosts", '-o', 'ServerAliveInterval=30', '-o', 'ServerAliveCountMax=3', '-o', 'ExitOnForwardFailure=yes', '-R', "80:localhost:$tunnelPort", 'nokey@localhost.run') `
         -WorkingDirectory $root -WindowStyle Hidden -PassThru `
         -RedirectStandardOutput $logPath -RedirectStandardError "$logPath.err"
       $url = Read-Url $logPath 'https://[a-z0-9]+\.lhr\.life'
@@ -270,7 +274,7 @@ function Start-Tunnel {
       if ($url -and $proc) { $started = $true }
     }
     elseif ($name -eq 'pinggy') {
-      $proc = Start-Process -FilePath $sshExe -ArgumentList @('-p', '443', '-o', 'StrictHostKeyChecking=no', '-o', "UserKnownHostsFile=$root\known_hosts", '-o', 'ServerAliveInterval=30', '-o', 'ExitOnForwardFailure=yes', '-R0', "localhost:$tunnelPort", 'a.pinggy.io') `
+      $proc = Start-Process -FilePath $sshExe -ArgumentList @('-p', '443', '-o', 'StrictHostKeyChecking=accept-new', '-o', "UserKnownHostsFile=$root\known_hosts", '-o', 'ServerAliveInterval=30', '-o', 'ExitOnForwardFailure=yes', '-R0', "localhost:$tunnelPort", 'a.pinggy.io') `
         -WorkingDirectory $root -WindowStyle Hidden -PassThru `
         -RedirectStandardOutput $logPath -RedirectStandardError "$logPath.err"
       $url = Read-Url $logPath 'https?://[a-z0-9-]+\.(?:free\.)?pinggy\.link'

@@ -54,10 +54,10 @@ Write-Host "      本地可用: $localUrl" -ForegroundColor DarkGray
 # ---------- 2) 公网隧道 ----------
 $providers = @(
   @{ name = 'localhost.run'; exe = 'ssh.exe';
-     args = @('-o','StrictHostKeyChecking=no','-o',"UserKnownHostsFile=$root\known_hosts",'-o','ServerAliveInterval=30','-o','ExitOnForwardFailure=yes','-R',"80:localhost:$Port",'nokey@localhost.run');
+     args = @('-o','StrictHostKeyChecking=accept-new','-o',"UserKnownHostsFile=$root\known_hosts",'-o','ServerAliveInterval=30','-o','ExitOnForwardFailure=yes','-R',"80:localhost:$Port",'nokey@localhost.run');
      regex = 'https://[a-z0-9]+\.lhr\.life' }
   @{ name = 'pinggy'; exe = 'ssh.exe';
-     args = @('-p','443','-o','StrictHostKeyChecking=no','-o',"UserKnownHostsFile=$root\known_hosts",'-o','ServerAliveInterval=30','-o','ExitOnForwardFailure=yes','-R0',"localhost:$Port",'a.pinggy.io');
+     args = @('-p','443','-o','StrictHostKeyChecking=accept-new','-o',"UserKnownHostsFile=$root\known_hosts",'-o','ServerAliveInterval=30','-o','ExitOnForwardFailure=yes','-R0',"localhost:$Port",'a.pinggy.io');
      regex = 'https?://[a-z0-9-]+\.(?:free\.)?pinggy\.link' }
 )
 $cf = Join-Path $root 'cloudflared.exe'
