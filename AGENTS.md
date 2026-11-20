@@ -70,3 +70,37 @@
 - 把保活间隔改得更频繁、加更多自动重启（历史证明这会加重风控）
 - 用按映像名杀进程、`robocopy /MIR` 反向同步、`Remove-Item -Recurse` 通配符这类高风险命令
 - 在没有测量数据的情况下「优化」阈值——先取证，再改，再对比（`kick-report.ps1 -Json` + `experiment-compare.ps1`）
+
+## 6. 分支与提交规范（2026-11-20 起生效）
+
+### 6.1 什么情况直接推 `main`
+
+- 纯文档：`README.md`、`AGENTS.md`、`docs/**`、`config/*.example.json`
+- 新增**只读**工具：`scripts/ops/*`、`scripts/research/*`（不参与生产链路）
+- 生产故障的热修：允许先直接推送恢复可用性，但事后必须补一条 PR（或在提交信息里写 `HOTFIX` 与原因）
+
+### 6.2 什么情况必须走分支 + PR
+
+- 运行时脚本：`scripts/runtime/guardian.ps1`、`scripts/runtime/qrsync/daemon.ps1`、
+  `scripts/runtime/qrsync/qrsync.js`、`scripts/runtime/astrbot_watchdog.ps1`、`web/server.js`
+- 任何改动会改变生产行为的配置：端口、恢复阈值、保活间隔、通知通道、鉴权
+- 恢复决策树（`Do-Recovery`）、端口映射（8430 / 8440）、凭据读取路径——**高危，必须 PR**
+
+### 6.3 分支与 PR 的规矩
+
+1. **分支短命**：一个 PR 只做一件事，1–3 个 commit，改动量尽量 < 300 行；不要挂过夜。
+2. **命名**：`feat/<简短描述>`、`fix/<简短描述>`、`docs/<简短描述>`、`chore/<简短描述>`。
+3. **PR 描述**必须写：改了什么、为什么改、**验证证据**（跑了哪些命令、结果如何）、回滚方式。
+4. **合并方式**：Squash and merge，然后删除分支；main 的历史保持“一个 PR 一个提交”。
+5. **本仓库没有 `gh` CLI**：推送分支后由操作者在 GitHub 页面点「Compare & pull request」创建 PR
+   （或由操作者另行授权工具创建）。自动化工具不要假设自己能直接建 PR。
+
+### 6.4 审查依赖 PR
+
+Codex / ChatGPT 的自动代码审查**只在 Pull Request 上触发**（推 `main` 不触发，仓库页「代码审查」列表也是 PR 列表）。
+因此：想被审查 → 必须走 6.2 的 PR 流程。PR 创建后，`AGENTS.md`（本文件）会作为仓库级审查指南被读取。
+
+### 6.5 生产部署仍然是独立一步
+
+仓库代码 ≠ 生产代码。`check-sync.ps1` 用于比对两者；部署前先备份，部署后必须跑
+`validate-repo.ps1`、`guardian.ps1 -SelfTest`、`smoke-test.ps1`，并在 `status.ps1` 里确认 `[OK]`。
