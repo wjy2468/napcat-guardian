@@ -24,6 +24,7 @@
 - [掉线取证（docs）](docs/掉线取证.md)
 - [o3HookMode 实验 Runbook](docs/实验-o3HookMode.md)
 - [被踢取证（2026-11-20）](docs/取证-2026-11-20.md)
+- [代码审查须知（AGENTS.md）](AGENTS.md)
 - [免责声明](#免责声明)
 
 ---
