@@ -88,9 +88,11 @@ $QR_PAGE_URL       = ""
 # 备用通知通道（ntfy.sh 在国内经常超时，必须有不依赖外网的兜底）：
 #   notifyEmail   : { "smtp":"smtp.qq.com", "port":465, "user":"xxx@qq.com",
 #                     "pass":"SMTP授权码", "to":"xxx@qq.com" }
+#   notifyEmailEvents : false 时只关"事件类"邮件，每日日报照发（2026-11-23 新增）
 #   notifyWebhook : { "type":"wecom|dingtalk|feishu|serverchan|pushplus|custom", "url":"..." }
 $NOTIFY_EMAIL      = $null
 $NOTIFY_WEBHOOK    = $null
+$NOTIFY_EMAIL_EVENTS = $true   # false = 关闭"事件类"邮件（掉线/恢复/熔断/扫码）；每日日报由 daily-report.py 独立发送，不受影响
 $CFG_PATH = Join-Path $NAPCAT_HOME "guardian.config.json"
 if (Test-Path $CFG_PATH)
 {
@@ -103,6 +105,7 @@ if (Test-Path $CFG_PATH)
         if ($null -ne $gcfg.notifyNtfy) { $NOTIFY_NTFY = [bool]$gcfg.notifyNtfy }
         if ($null -ne $gcfg.notifyToast) { $NOTIFY_TOAST = [bool]$gcfg.notifyToast }
         if ($gcfg.notifyEmail) { $NOTIFY_EMAIL = $gcfg.notifyEmail }
+        if ($null -ne $gcfg.notifyEmailEvents) { $NOTIFY_EMAIL_EVENTS = [bool]$gcfg.notifyEmailEvents }
         if ($gcfg.notifyWebhook) { $NOTIFY_WEBHOOK = $gcfg.notifyWebhook }
         if ($gcfg.pythonExe) { $PYTHON_EXE = [string]$gcfg.pythonExe }
     }
@@ -443,7 +446,14 @@ function Send-Notification([string]$key, [string]$title, [string]$body, [string]
     }
     # ntfy.sh 在国内经常超时（2026-11-13 实测 07:34 推送超时），所以兜底通道必须独立可用：
     # 邮件（smtp.qq.com:465 可用）/ 企业微信、钉钉、飞书 webhook 均实测可达。
-    $null = Send-EmailNotification $title $body $attach
+    if ($NOTIFY_EMAIL_EVENTS)
+    {
+        $null = Send-EmailNotification $title $body $attach
+    }
+    else
+    {
+        Write-Log ("notify(email) skipped for event '" + $key + "' (notifyEmailEvents=false)")
+    }
     $null = Send-WebhookNotification $title $body
     if ($NOTIFY_TOAST) { Show-Toast $title $body }
 }

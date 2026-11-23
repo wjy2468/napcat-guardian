@@ -595,6 +595,8 @@ Get-Content D:\napcat\guardian.log -Tail 20       # 应能看到 started / keep-
 | 企业微信 / 钉钉 / 飞书 / Server酱 / PushPlus | 想推到群里 | 填 webhook URL 即可，脚本按 `type` 自动组装报文 |
 | Windows Toast | 本机在用时 | WinRT `ToastNotificationManager`，家庭版也可用；失败静默 |
 
+**只想收每日日报、不想收掉线/恢复通知？** 把 `notifyEmailEvents` 设为 `false`：`Send-Notification` 里的事件邮件会被跳过（日志记 `notify(email) skipped for event ...`），而每日日报走的是 `daily-report.py` 自己的 SMTP 发送路径，不受这个开关影响（2026-11-23 新增）。
+
 敏感配置不写在脚本里，放到 `$NAPCAT_HOME\guardian.config.json`（已被 `.gitignore` 忽略），模板见 `config/guardian.example.json`：
 
 ```json
@@ -606,6 +608,7 @@ Get-Content D:\napcat\guardian.log -Tail 20       # 应能看到 started / keep-
   "notifyToast": true,
   "notifyEmail": { "smtp": "smtp.qq.com", "port": 587, "user": "YOUR_QQ@qq.com",
                    "pass": "YOUR_SMTP_AUTH_CODE", "to": "YOUR_QQ@qq.com", "ssl": true },
+  "notifyEmailEvents": true,
   "notifyWebhook": { "type": "custom", "url": "" }
 }
 ```
